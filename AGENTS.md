@@ -13,13 +13,16 @@ Implement the Stream 4x5 cross-platform control panel described in `PLAN_1.md`. 
 - Continuous writes are coalesced at roughly 30 Hz, discrete writes are
   immediate, every successful write is read back, and meter delivery retains
   only the newest frame.
-- Real Windows and Linux backends are deliberate `Unsupported` safety stubs.
-  Do not weaken these stubs until the corresponding ABI or USB operation is
-  documented in `docs/protocol/stream4x5.md` and covered by a sanitized golden
-  fixture.
+- The Windows backend now writes Input 1/2 preamp gain, 48V phantom power,
+  80 Hz high-pass, and phase invert on the hardware-tested firmware `0x018A`
+  profile through a full-block read-modify-write. Other Windows writes and all Linux writes
+  remain deliberate `Unsupported` safety stubs. Do not weaken them until the
+  corresponding operation is documented in `docs/protocol/stream4x5.md` and
+  covered by a sanitized golden fixture.
 - The Windows x64 host passes the current mock tests, formatting, strict
-  Clippy, and documentation build. Arch Linux and physical hardware remain
-  unverified.
+  Clippy, and documentation build. Ignored hardware tests changed and restored
+  both Input 1/2 gains, 48V, high-pass states, and phase states with matching
+  read-back. Arch Linux remains unverified.
 - The tested lifecycle is wired into an Iced 0.14 daemon. Closing the window
   leaves the daemon alive, `--background` starts without a window, and a
   `tray-icon` menu provides Show, Reconnect, Status, and Quit. Linux selects
@@ -31,22 +34,23 @@ Implement the Stream 4x5 cross-platform control panel described in `PLAN_1.md`. 
   Unix-socket, KSNI, X11, and Wayland configuration cross-compiles and passes
   strict Clippy for `x86_64-unknown-linux-gnu`, but has not run on Arch yet.
 - Explicit autostart consent, bounded single-instance command framing, and
-  English/Chinese key parity are covered by tests. Platform IPC transports
-  and startup-entry writers are not implemented yet.
-- The Windows backend can validate the registered 64-bit vendor API path
-  without loading it. `lewittctl diagnose [--json]` exposes this read-only
-  result; all unverified CLI operations fail closed.
+  English/Chinese key parity are covered by tests. Startup-entry writers are
+  intentionally deferred until the remaining device work is complete.
+- The Windows backend validates and loads the registered 64-bit vendor API,
+  reads the hardware snapshot, and writes Input 1/2 gain, 48V, 80 Hz high-pass,
+  and phase invert only on firmware `0x018A`. `lewittctl diagnose [--json]` remains
+  read-only and all unverified CLI operations fail closed.
 
 ## Immediate Priorities
 
-1. Validate the Linux Unix-socket transport and KSNI tray in an Arch
+1. Validate and expose remaining Windows hardware controls one property at a
+   time, with read-back, restoration, and a sanitized fixture for each.
+2. Validate the Linux Unix-socket transport and KSNI tray in an Arch
    environment.
-2. Implement platform autostart writers behind the tested explicit-consent
-   state machine.
 3. Add Linux VID/PID-only discovery and permission diagnostics in an Arch
    environment without detaching an audio interface.
-4. Expose real controls one property at a time only after protocol evidence is
-   committed.
+4. Implement platform autostart writers last, behind the tested
+   explicit-consent state machine.
 
 ## Product Boundaries
 
@@ -113,7 +117,9 @@ Keep platform-specific dependencies behind target-specific Cargo sections. The s
 - Autostart launches with `--background`. A manual second launch must signal the existing instance to show its window.
 - Use a Windows named pipe and a socket under `XDG_RUNTIME_DIR` on Linux for single-instance IPC.
 - Provide Chinese and English resources with identical key sets. Default to the system locale and allow manual switching.
-- Poll meters at about 30 Hz while visible and 2 Hz while hidden. A disconnected device must not cause a crash or busy loop.
+- Poll the hardware snapshot and meters at about 60 Hz while visible so physical
+  knob changes track promptly. While hidden, poll meters at 2 Hz and the full
+  snapshot at 0.2 Hz. A disconnected device must not cause a crash or busy loop.
 - Use an independent visual design. Do not copy vendor artwork, icons, layout assets, or branding beyond compatibility text.
 
 ## Presets and CLI

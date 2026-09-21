@@ -21,6 +21,8 @@ type GetAsioInstanceInfoFn = unsafe extern "system" fn(u32, *mut c_void) -> u32;
 type GetDspPropertyFn = unsafe extern "system" fn(u32, *mut c_void, u32) -> u32;
 type AudioControlRequestGetFn =
     unsafe extern "system" fn(u32, u8, u8, u8, u8, *mut c_void, u32, *mut u32, u32) -> u32;
+type AudioControlRequestSetFn =
+    unsafe extern "system" fn(u32, u8, u8, u8, u8, *mut c_void, u32, *mut u32, u32) -> u32;
 
 pub(super) struct VendorApi {
     get_api_version: GetApiVersionFn,
@@ -36,6 +38,7 @@ pub(super) struct VendorApi {
     get_asio_instance_info: GetAsioInstanceInfoFn,
     get_dsp_property: GetDspPropertyFn,
     audio_control_request_get: AudioControlRequestGetFn,
+    audio_control_request_set: AudioControlRequestSetFn,
     _library: Library,
 }
 
@@ -74,6 +77,10 @@ impl VendorApi {
             audio_control_request_get: load_symbol(
                 &library,
                 b"TUSBAUDIO_AudioControlRequestGet\0",
+            )?,
+            audio_control_request_set: load_symbol(
+                &library,
+                b"TUSBAUDIO_AudioControlRequestSet\0",
             )?,
             _library: library,
         };
@@ -220,6 +227,41 @@ impl VendorApi {
             });
         }
         Ok(bytes)
+    }
+
+    pub(super) fn set_stream4x5_settings(
+        &self,
+        handle: u32,
+        bytes: &mut [u8; 40],
+    ) -> BackendResult<()> {
+        let mut transferred = 0_u32;
+        // SAFETY: Static analysis recovered the SET export with the same
+        // synchronous ABI as GET. The caller supplies the complete 40-byte
+        // settings block obtained by read-modify-write, so unknown fields are
+        // preserved. Both pointers remain valid for the call and are not
+        // retained by the vendor API.
+        let status = unsafe {
+            (self.audio_control_request_set)(
+                handle,
+                0x33,
+                0x03,
+                0,
+                0,
+                bytes.as_mut_ptr().cast::<c_void>(),
+                40,
+                &raw mut transferred,
+                500,
+            )
+        };
+        check_status("write Stream 4x5 settings", status)?;
+        if transferred != 40 {
+            return Err(BackendError::ProtocolMismatch {
+                details: format!(
+                    "Stream 4x5 settings write transferred {transferred} bytes instead of 40"
+                ),
+            });
+        }
+        Ok(())
     }
 }
 

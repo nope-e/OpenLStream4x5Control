@@ -1,20 +1,23 @@
-//! Read-only Windows backend for the registered Stream 4x5 vendor API.
+//! Windows backend for the registered Stream 4x5 vendor API.
 //!
-//! The backend resolves a narrowly typed read subset from the registered
-//! absolute DLL path. It never resolves write, raw vendor, firmware, or DFU
-//! exports. All FFI stays in this crate and all hardware access is serialized
-//! by the shared controller worker.
+//! The backend resolves a narrowly typed subset from the registered absolute
+//! DLL path. Input 1/2 preamp gain is written with a full-block
+//! read-modify-write; raw vendor, firmware, and DFU exports remain unavailable.
+//! All FFI stays in this crate and all hardware access is serialized by the
+//! shared controller worker.
 
 use lewitt_core::{
     BackendError, BackendResult, ControlCommand, ControlId, ControlValue, DeviceBackend,
     DeviceCapabilities, DeviceEvent, DeviceId, DeviceInfo, DeviceSnapshot, MeterFrame,
 };
+#[cfg(any(windows, test))]
+use lewitt_core::{BusId, ChannelId};
 #[cfg(windows)]
 use lewitt_core::{
-    BusId, ChannelId, ControlAccess, ControlDescriptor, ControlKind, FirmwareStatus, NumericRange,
+    ControlAccess, ControlDescriptor, ControlKind, FirmwareStatus, NumericRange,
     STREAM_4X5_PRODUCT_ID, STREAM_4X5_VENDOR_ID, ValueKind,
 };
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -152,82 +155,21 @@ impl WindowsBackend {
         api.close(open.handle)
     }
 
-    fn readonly_capabilities(&self) -> BackendResult<DeviceCapabilities> {
+    fn capabilities_for_open_device(&self) -> BackendResult<DeviceCapabilities> {
         let open = self.require_open()?;
-        let controls = vec![
-            decibel_control(
-                ControlId::InputVolume {
-                    channel: ChannelId::Input1,
-                },
-                Some((-7.0, 48.0)),
-            ),
-            decibel_control(
-                ControlId::InputVolume {
-                    channel: ChannelId::Input2,
-                },
-                Some((-7.0, 48.0)),
-            ),
-            boolean_control(ControlId::InputMute {
-                channel: ChannelId::Input1,
-            }),
-            boolean_control(ControlId::InputMute {
-                channel: ChannelId::Input2,
-            }),
-            boolean_control(ControlId::PhantomPower {
-                channel: ChannelId::Input1,
-            }),
-            boolean_control(ControlId::PhantomPower {
-                channel: ChannelId::Input2,
-            }),
-            boolean_control(ControlId::HighPass {
-                channel: ChannelId::Input1,
-            }),
-            boolean_control(ControlId::HighPass {
-                channel: ChannelId::Input2,
-            }),
-            boolean_control(ControlId::PhaseInvert {
-                channel: ChannelId::Input1,
-            }),
-            boolean_control(ControlId::PhaseInvert {
-                channel: ChannelId::Input2,
-            }),
-            decibel_control(
-                ControlId::OutputVolume {
-                    bus: BusId::Output1_2,
-                },
-                Some((-60.0, 0.0)),
-            ),
-            decibel_control(
-                ControlId::OutputVolume {
-                    bus: BusId::Output3_4,
-                },
-                Some((-60.0, 0.0)),
-            ),
-            decibel_control(
-                ControlId::OutputVolume {
-                    bus: BusId::Output5_6,
-                },
-                Some((-60.0, 0.0)),
-            ),
-            boolean_control(ControlId::OutputMute {
-                bus: BusId::Output1_2,
-            }),
-            boolean_control(ControlId::OutputMute {
-                bus: BusId::Output3_4,
-            }),
-            boolean_control(ControlId::OutputMute {
-                bus: BusId::Output5_6,
-            }),
-            integer_control(ControlId::SampleRate),
-            choice_control(ControlId::ClockSource, &["internal", "external"]),
-            integer_control(ControlId::AsioBufferSize),
-        ];
+        let firmware = if open.info.firmware_version.as_deref() == Some("0x018A") {
+            FirmwareStatus::Verified {
+                profile: "windows-vendor-api-settings-v1:0x018A".into(),
+            }
+        } else {
+            FirmwareStatus::UnknownReadOnly {
+                version: open.info.firmware_version.clone(),
+            }
+        };
         Ok(DeviceCapabilities {
             model: open.info.display_name.clone(),
-            firmware: FirmwareStatus::UnknownReadOnly {
-                version: open.info.firmware_version.clone(),
-            },
-            controls,
+            firmware,
+            controls: stream4x5_control_descriptors(),
             meter_sources: Vec::new(),
         })
     }
@@ -277,6 +219,98 @@ impl WindowsBackend {
             controls,
         })
     }
+}
+
+#[cfg(windows)]
+fn stream4x5_control_descriptors() -> Vec<ControlDescriptor> {
+    vec![
+        decibel_control_with_access(
+            ControlId::InputVolume {
+                channel: ChannelId::Input1,
+            },
+            Some((-7.0, 48.0)),
+            ControlAccess::Writable,
+        ),
+        decibel_control_with_access(
+            ControlId::InputVolume {
+                channel: ChannelId::Input2,
+            },
+            Some((-7.0, 48.0)),
+            ControlAccess::Writable,
+        ),
+        boolean_control(ControlId::InputMute {
+            channel: ChannelId::Input1,
+        }),
+        boolean_control(ControlId::InputMute {
+            channel: ChannelId::Input2,
+        }),
+        boolean_control_with_access(
+            ControlId::PhantomPower {
+                channel: ChannelId::Input1,
+            },
+            ControlAccess::Writable,
+        ),
+        boolean_control_with_access(
+            ControlId::PhantomPower {
+                channel: ChannelId::Input2,
+            },
+            ControlAccess::Writable,
+        ),
+        boolean_control_with_access(
+            ControlId::HighPass {
+                channel: ChannelId::Input1,
+            },
+            ControlAccess::Writable,
+        ),
+        boolean_control_with_access(
+            ControlId::HighPass {
+                channel: ChannelId::Input2,
+            },
+            ControlAccess::Writable,
+        ),
+        boolean_control_with_access(
+            ControlId::PhaseInvert {
+                channel: ChannelId::Input1,
+            },
+            ControlAccess::Writable,
+        ),
+        boolean_control_with_access(
+            ControlId::PhaseInvert {
+                channel: ChannelId::Input2,
+            },
+            ControlAccess::Writable,
+        ),
+        decibel_control(
+            ControlId::OutputVolume {
+                bus: BusId::Output1_2,
+            },
+            Some((-60.0, 0.0)),
+        ),
+        decibel_control(
+            ControlId::OutputVolume {
+                bus: BusId::Output3_4,
+            },
+            Some((-60.0, 0.0)),
+        ),
+        decibel_control(
+            ControlId::OutputVolume {
+                bus: BusId::Output5_6,
+            },
+            Some((-60.0, 0.0)),
+        ),
+        boolean_control(ControlId::OutputMute {
+            bus: BusId::Output1_2,
+        }),
+        boolean_control(ControlId::OutputMute {
+            bus: BusId::Output3_4,
+        }),
+        boolean_control(ControlId::OutputMute {
+            bus: BusId::Output5_6,
+        }),
+        integer_control(ControlId::SampleRate),
+        choice_control(ControlId::ClockSource, &["internal", "external"]),
+        integer_control(ControlId::AsioBufferSize),
+    ]
 }
 
 #[cfg(windows)]
@@ -336,7 +370,7 @@ impl DeviceBackend for WindowsBackend {
     }
 
     fn capabilities(&mut self) -> BackendResult<DeviceCapabilities> {
-        self.readonly_capabilities()
+        self.capabilities_for_open_device()
     }
 
     fn read_snapshot(&mut self) -> BackendResult<DeviceSnapshot> {
@@ -357,12 +391,17 @@ impl DeviceBackend for WindowsBackend {
     }
 
     fn set_control(&mut self, command: &ControlCommand) -> BackendResult<()> {
-        Err(BackendError::Unsupported {
-            feature: format!(
-                "write to {:?}; Windows backend is read-only",
-                command.control
-            ),
-        })
+        let open = self.require_open()?;
+        if open.info.firmware_version.as_deref() != Some("0x018A") {
+            return Err(BackendError::UnsupportedFirmware {
+                version: open.info.firmware_version.clone(),
+            });
+        }
+        let handle = open.handle;
+        let mut settings = self.ensure_api()?.stream4x5_settings(handle)?;
+        apply_settings_write(&mut settings, command)?;
+        self.ensure_api()?
+            .set_stream4x5_settings(handle, &mut settings)
     }
 
     fn read_back(&mut self, control: &ControlId) -> BackendResult<ControlValue> {
@@ -496,27 +535,122 @@ fn read_utf16(bytes: &[u8], offset: usize) -> BackendResult<String> {
 
 #[cfg(windows)]
 fn decibel_control(id: ControlId, range: Option<(f32, f32)>) -> ControlDescriptor {
+    decibel_control_with_access(id, range, ControlAccess::ReadOnly)
+}
+
+#[cfg(windows)]
+fn decibel_control_with_access(
+    id: ControlId,
+    range: Option<(f32, f32)>,
+    access: ControlAccess,
+) -> ControlDescriptor {
     ControlDescriptor {
         id,
         kind: ControlKind::Continuous,
         value_kind: ValueKind::Decibels,
-        access: ControlAccess::ReadOnly,
+        access,
         range: range.map(|(minimum, maximum)| NumericRange {
             minimum,
             maximum,
-            step: None,
+            step: Some(1.0),
         }),
         choices: Vec::new(),
     }
 }
 
+#[cfg(any(windows, test))]
+fn apply_settings_write(settings: &mut [u8; 40], command: &ControlCommand) -> BackendResult<()> {
+    match &command.control {
+        ControlId::InputVolume {
+            channel: ChannelId::Input1,
+        } => apply_input_gain_write(settings, command, 18, 26),
+        ControlId::InputVolume {
+            channel: ChannelId::Input2,
+        } => apply_input_gain_write(settings, command, 20, 27),
+        ControlId::HighPass {
+            channel: ChannelId::Input1,
+        } => apply_boolean_settings_write(settings, command, 30, "80 Hz high-pass"),
+        ControlId::HighPass {
+            channel: ChannelId::Input2,
+        } => apply_boolean_settings_write(settings, command, 31, "80 Hz high-pass"),
+        ControlId::PhaseInvert {
+            channel: ChannelId::Input1,
+        } => apply_boolean_settings_write(settings, command, 34, "phase invert"),
+        ControlId::PhaseInvert {
+            channel: ChannelId::Input2,
+        } => apply_boolean_settings_write(settings, command, 35, "phase invert"),
+        ControlId::PhantomPower {
+            channel: ChannelId::Input1,
+        } => apply_boolean_settings_write(settings, command, 38, "48V phantom power"),
+        ControlId::PhantomPower {
+            channel: ChannelId::Input2,
+        } => apply_boolean_settings_write(settings, command, 39, "48V phantom power"),
+        _ => Err(BackendError::Unsupported {
+            feature: format!("Windows write to {:?}", command.control),
+        }),
+    }
+}
+
+#[cfg(any(windows, test))]
+fn apply_input_gain_write(
+    settings: &mut [u8; 40],
+    command: &ControlCommand,
+    gain_offset: usize,
+    state_offset: usize,
+) -> BackendResult<()> {
+    let ControlValue::Decibels(gain_db) = &command.value else {
+        return Err(BackendError::InvalidValue {
+            control: command.control.clone(),
+            reason: "input preamp gain requires a decibel value".into(),
+        });
+    };
+    if !gain_db.is_finite() || !(-7.0..=48.0).contains(gain_db) {
+        return Err(BackendError::InvalidValue {
+            control: command.control.clone(),
+            reason: format!("gain {gain_db} is outside [-7, 48] dB"),
+        });
+    }
+    let whole_db = (-7_i16..=48_i16)
+        .find(|candidate| (f32::from(*candidate) - *gain_db).abs() <= f32::EPSILON)
+        .ok_or_else(|| BackendError::InvalidValue {
+            control: command.control.clone(),
+            reason: format!("gain {gain_db} is not aligned to the 1 dB hardware step"),
+        })?;
+    let raw = whole_db * 256;
+    settings[gain_offset..gain_offset + 2].copy_from_slice(&raw.to_le_bytes());
+    settings[state_offset] = u8::from(whole_db == -7);
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn apply_boolean_settings_write(
+    settings: &mut [u8; 40],
+    command: &ControlCommand,
+    offset: usize,
+    control_name: &str,
+) -> BackendResult<()> {
+    let ControlValue::Boolean(enabled) = &command.value else {
+        return Err(BackendError::InvalidValue {
+            control: command.control.clone(),
+            reason: format!("{control_name} requires a boolean value"),
+        });
+    };
+    settings[offset] = u8::from(*enabled);
+    Ok(())
+}
+
 #[cfg(windows)]
 fn boolean_control(id: ControlId) -> ControlDescriptor {
+    boolean_control_with_access(id, ControlAccess::ReadOnly)
+}
+
+#[cfg(windows)]
+fn boolean_control_with_access(id: ControlId, access: ControlAccess) -> ControlDescriptor {
     ControlDescriptor {
         id,
         kind: ControlKind::Discrete,
         value_kind: ValueKind::Boolean,
-        access: ControlAccess::ReadOnly,
+        access,
         range: None,
         choices: Vec::new(),
     }
@@ -546,17 +680,17 @@ fn choice_control(id: ControlId, choices: &[&str]) -> ControlDescriptor {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn insert_db(controls: &mut BTreeMap<ControlId, ControlValue>, id: ControlId, value: f32) {
     controls.insert(id, ControlValue::Decibels(value));
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn insert_bool(controls: &mut BTreeMap<ControlId, ControlValue>, id: ControlId, value: bool) {
     controls.insert(id, ControlValue::Boolean(value));
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn decode_hardware_settings(
     settings: &[u8; 40],
 ) -> BackendResult<BTreeMap<ControlId, ControlValue>> {
@@ -566,7 +700,7 @@ fn decode_hardware_settings(
     Ok(controls)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn decode_output_settings(
     settings: &[u8; 40],
     controls: &mut BTreeMap<ControlId, ControlValue>,
@@ -609,7 +743,7 @@ fn decode_output_mutes(attenuation: [i32; 6]) -> [bool; 3] {
     ]
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn decode_input_settings(
     settings: &[u8; 40],
     controls: &mut BTreeMap<ControlId, ControlValue>,
@@ -689,6 +823,298 @@ mod tests {
         assert_eq!(decode_output_mutes(attenuation), [true, false, true]);
     }
 
+    #[test]
+    fn input_gain_write_preserves_every_unrelated_settings_byte() {
+        let fixture = include_str!("../../../fixtures/stream4x5/vendor-api-read-v1.json");
+        let response = fixture
+            .split("\"response_hex\": \"")
+            .nth(1)
+            .and_then(|tail| tail.split('"').next())
+            .expect("fixture contains settings response");
+        let mut settings: [u8; 40] = decode_hex(response)
+            .try_into()
+            .expect("fixture is exactly one settings block");
+        let before = settings;
+
+        apply_settings_write(
+            &mut settings,
+            &ControlCommand {
+                control: ControlId::InputVolume {
+                    channel: ChannelId::Input1,
+                },
+                value: ControlValue::Decibels(12.0),
+            },
+        )
+        .expect("documented input gain is writable");
+
+        assert_eq!(&settings[18..20], &12_i16.wrapping_mul(256).to_le_bytes());
+        assert_eq!(settings[26], 0);
+        for index in 0..settings.len() {
+            if !matches!(index, 18 | 19 | 26) {
+                assert_eq!(settings[index], before[index], "byte {index} changed");
+            }
+        }
+    }
+
+    #[test]
+    fn sanitized_write_fixture_matches_the_input_gain_encoder() {
+        let fixture =
+            include_str!("../../../fixtures/stream4x5/vendor-api-input-gain-write-v1.json");
+        let before = fixture_string(fixture, "before_block_hex");
+        let expected = fixture_string(fixture, "expected_written_block_hex");
+        let mut settings: [u8; 40] = decode_hex(before)
+            .try_into()
+            .expect("fixture before block is exactly 40 bytes");
+        apply_settings_write(
+            &mut settings,
+            &ControlCommand {
+                control: ControlId::InputVolume {
+                    channel: ChannelId::Input1,
+                },
+                value: ControlValue::Decibels(45.0),
+            },
+        )
+        .expect("golden fixture command encodes");
+        assert_eq!(settings.as_slice(), decode_hex(expected));
+    }
+
+    #[test]
+    fn sanitized_write_fixture_matches_the_high_pass_encoder() {
+        let fixture =
+            include_str!("../../../fixtures/stream4x5/vendor-api-high-pass-write-v1.json");
+        let before = fixture_string(fixture, "before_block_hex");
+        let expected = fixture_string(fixture, "expected_written_block_hex");
+        let mut settings: [u8; 40] = decode_hex(before)
+            .try_into()
+            .expect("fixture before block is exactly 40 bytes");
+        apply_settings_write(
+            &mut settings,
+            &ControlCommand {
+                control: ControlId::HighPass {
+                    channel: ChannelId::Input1,
+                },
+                value: ControlValue::Boolean(false),
+            },
+        )
+        .expect("golden fixture command encodes");
+        assert_eq!(settings.as_slice(), decode_hex(expected));
+    }
+
+    #[test]
+    fn high_pass_write_changes_only_the_selected_channel_byte() {
+        let mut settings = [0xA5; 40];
+        apply_settings_write(
+            &mut settings,
+            &ControlCommand {
+                control: ControlId::HighPass {
+                    channel: ChannelId::Input2,
+                },
+                value: ControlValue::Boolean(true),
+            },
+        )
+        .expect("high-pass write is supported");
+        assert_eq!(settings[31], 1);
+        for (index, value) in settings.into_iter().enumerate() {
+            if index != 31 {
+                assert_eq!(value, 0xA5, "byte {index} changed");
+            }
+        }
+    }
+
+    #[test]
+    fn high_pass_write_rejects_non_boolean_values() {
+        assert!(matches!(
+            apply_settings_write(
+                &mut [0; 40],
+                &ControlCommand {
+                    control: ControlId::HighPass {
+                        channel: ChannelId::Input1,
+                    },
+                    value: ControlValue::Decibels(0.0),
+                },
+            ),
+            Err(BackendError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn sanitized_write_fixture_matches_the_phase_invert_encoder() {
+        let fixture =
+            include_str!("../../../fixtures/stream4x5/vendor-api-phase-invert-write-v1.json");
+        let before = fixture_string(fixture, "before_block_hex");
+        let expected = fixture_string(fixture, "expected_written_block_hex");
+        let mut settings: [u8; 40] = decode_hex(before)
+            .try_into()
+            .expect("fixture before block is exactly 40 bytes");
+        apply_settings_write(
+            &mut settings,
+            &ControlCommand {
+                control: ControlId::PhaseInvert {
+                    channel: ChannelId::Input1,
+                },
+                value: ControlValue::Boolean(true),
+            },
+        )
+        .expect("golden fixture command encodes");
+        assert_eq!(settings.as_slice(), decode_hex(expected));
+    }
+
+    #[test]
+    fn phase_invert_write_changes_only_the_selected_channel_byte() {
+        let mut settings = [0xA5; 40];
+        apply_settings_write(
+            &mut settings,
+            &ControlCommand {
+                control: ControlId::PhaseInvert {
+                    channel: ChannelId::Input2,
+                },
+                value: ControlValue::Boolean(false),
+            },
+        )
+        .expect("phase-invert write is supported");
+        assert_eq!(settings[35], 0);
+        for (index, value) in settings.into_iter().enumerate() {
+            if index != 35 {
+                assert_eq!(value, 0xA5, "byte {index} changed");
+            }
+        }
+    }
+
+    #[test]
+    fn phase_invert_write_rejects_non_boolean_values() {
+        assert!(matches!(
+            apply_settings_write(
+                &mut [0; 40],
+                &ControlCommand {
+                    control: ControlId::PhaseInvert {
+                        channel: ChannelId::Input1,
+                    },
+                    value: ControlValue::Integer(1),
+                },
+            ),
+            Err(BackendError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn sanitized_write_fixture_matches_the_phantom_power_encoder() {
+        let fixture = include_str!("../../../fixtures/stream4x5/vendor-api-phantom-write-v1.json");
+        let before = fixture_string(fixture, "before_block_hex");
+        let expected = fixture_string(fixture, "expected_written_block_hex");
+        let mut settings: [u8; 40] = decode_hex(before)
+            .try_into()
+            .expect("fixture before block is exactly 40 bytes");
+        apply_settings_write(
+            &mut settings,
+            &ControlCommand {
+                control: ControlId::PhantomPower {
+                    channel: ChannelId::Input2,
+                },
+                value: ControlValue::Boolean(true),
+            },
+        )
+        .expect("golden fixture command encodes");
+        assert_eq!(settings.as_slice(), decode_hex(expected));
+    }
+
+    #[test]
+    fn phantom_power_write_changes_only_the_selected_channel_byte() {
+        let mut settings = [0xA5; 40];
+        apply_settings_write(
+            &mut settings,
+            &ControlCommand {
+                control: ControlId::PhantomPower {
+                    channel: ChannelId::Input1,
+                },
+                value: ControlValue::Boolean(false),
+            },
+        )
+        .expect("phantom-power write is encoded");
+        assert_eq!(settings[38], 0);
+        for (index, value) in settings.into_iter().enumerate() {
+            if index != 38 {
+                assert_eq!(value, 0xA5, "byte {index} changed");
+            }
+        }
+    }
+
+    #[test]
+    fn phantom_power_write_rejects_non_boolean_values() {
+        assert!(matches!(
+            apply_settings_write(
+                &mut [0; 40],
+                &ControlCommand {
+                    control: ControlId::PhantomPower {
+                        channel: ChannelId::Input1,
+                    },
+                    value: ControlValue::Integer(48),
+                },
+            ),
+            Err(BackendError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn input_gain_endpoint_sets_the_derived_state_flag() {
+        let mut settings = [0xA5; 40];
+        apply_settings_write(
+            &mut settings,
+            &ControlCommand {
+                control: ControlId::InputVolume {
+                    channel: ChannelId::Input2,
+                },
+                value: ControlValue::Decibels(-7.0),
+            },
+        )
+        .expect("input endpoint is valid");
+        assert_eq!(&settings[20..22], &(-7_i16 * 256).to_le_bytes());
+        assert_eq!(settings[27], 1);
+        assert_eq!(settings[19], 0xA5);
+        assert_eq!(settings[28], 0xA5);
+    }
+
+    #[test]
+    fn input_gain_write_rejects_wrong_type_step_range_and_control() {
+        let invalid_commands = [
+            ControlCommand {
+                control: ControlId::InputVolume {
+                    channel: ChannelId::Input1,
+                },
+                value: ControlValue::Boolean(true),
+            },
+            ControlCommand {
+                control: ControlId::InputVolume {
+                    channel: ChannelId::Input1,
+                },
+                value: ControlValue::Decibels(1.5),
+            },
+            ControlCommand {
+                control: ControlId::InputVolume {
+                    channel: ChannelId::Input1,
+                },
+                value: ControlValue::Decibels(49.0),
+            },
+        ];
+        for command in invalid_commands {
+            assert!(matches!(
+                apply_settings_write(&mut [0; 40], &command),
+                Err(BackendError::InvalidValue { .. })
+            ));
+        }
+        assert!(matches!(
+            apply_settings_write(
+                &mut [0; 40],
+                &ControlCommand {
+                    control: ControlId::OutputVolume {
+                        bus: BusId::Output1_2,
+                    },
+                    value: ControlValue::Decibels(-12.0),
+                },
+            ),
+            Err(BackendError::Unsupported { .. })
+        ));
+    }
+
     fn decode_hex(value: &str) -> Vec<u8> {
         value
             .as_bytes()
@@ -700,6 +1126,14 @@ mod tests {
                 u8::from_str_radix(text, 16).expect("fixture contains valid hex")
             })
             .collect()
+    }
+
+    fn fixture_string<'a>(fixture: &'a str, key: &str) -> &'a str {
+        fixture
+            .split(&format!("\"{key}\": \""))
+            .nth(1)
+            .and_then(|tail| tail.split('"').next())
+            .expect("fixture contains the requested string")
     }
 
     #[cfg(windows)]
@@ -720,6 +1154,129 @@ mod tests {
             bus: BusId::Output1_2,
         }));
         backend.close().expect("device close succeeds");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "writes Input 1/2 gain on a connected Stream 4x5 and restores both"]
+    fn live_input_gains_round_trip_restore_original_values() {
+        let mut backend = WindowsBackend::new();
+        let devices = backend.enumerate().expect("enumeration succeeds");
+        let device = devices.first().expect("a Stream 4x5 is connected");
+        backend.open(&device.id).expect("device open succeeds");
+        for channel in [ChannelId::Input1, ChannelId::Input2] {
+            live_gain_round_trip(&mut backend, channel);
+        }
+        let closed = backend.close();
+        closed.expect("device close succeeds");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "toggles Input 1/2 high-pass on a connected Stream 4x5 and restores both"]
+    fn live_high_pass_round_trip_restores_original_values() {
+        let mut backend = WindowsBackend::new();
+        let devices = backend.enumerate().expect("enumeration succeeds");
+        let device = devices.first().expect("a Stream 4x5 is connected");
+        backend.open(&device.id).expect("device open succeeds");
+        for channel in [ChannelId::Input1, ChannelId::Input2] {
+            live_boolean_round_trip(&mut backend, &ControlId::HighPass { channel });
+        }
+        backend.close().expect("device close succeeds");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "toggles Input 1/2 phase invert on a connected Stream 4x5 and restores both"]
+    fn live_phase_invert_round_trip_restores_original_values() {
+        let mut backend = WindowsBackend::new();
+        let devices = backend.enumerate().expect("enumeration succeeds");
+        let device = devices.first().expect("a Stream 4x5 is connected");
+        backend.open(&device.id).expect("device open succeeds");
+        for channel in [ChannelId::Input1, ChannelId::Input2] {
+            live_boolean_round_trip(&mut backend, &ControlId::PhaseInvert { channel });
+        }
+        backend.close().expect("device close succeeds");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires safe/disconnected inputs; toggles Input 1/2 48V and restores both"]
+    fn live_phantom_power_round_trip_restores_original_values() {
+        assert_eq!(
+            std::env::var("LEWITT_CTL_CONFIRM_PHANTOM_SAFE").as_deref(),
+            Ok("1"),
+            "set LEWITT_CTL_CONFIRM_PHANTOM_SAFE=1 only after both inputs are disconnected or confirmed phantom-safe"
+        );
+        let mut backend = WindowsBackend::new();
+        let devices = backend.enumerate().expect("enumeration succeeds");
+        let device = devices.first().expect("a Stream 4x5 is connected");
+        backend.open(&device.id).expect("device open succeeds");
+        for channel in [ChannelId::Input1, ChannelId::Input2] {
+            live_boolean_round_trip(&mut backend, &ControlId::PhantomPower { channel });
+        }
+        backend.close().expect("device close succeeds");
+    }
+
+    #[cfg(windows)]
+    fn live_gain_round_trip(backend: &mut WindowsBackend, channel: ChannelId) {
+        let control = ControlId::InputVolume { channel };
+        let original = backend
+            .read_back(&control)
+            .expect("original gain is readable");
+        let ControlValue::Decibels(original_db) = original else {
+            panic!("input gain is not a decibel value");
+        };
+        let target_db = if original_db <= 47.0 {
+            original_db + 1.0
+        } else {
+            original_db - 1.0
+        };
+        backend
+            .set_control(&ControlCommand {
+                control: control.clone(),
+                value: ControlValue::Decibels(target_db),
+            })
+            .expect("temporary write succeeds");
+        let observed = backend.read_back(&control);
+
+        let restore = backend.set_control(&ControlCommand {
+            control: control.clone(),
+            value: ControlValue::Decibels(original_db),
+        });
+        let restored = backend.read_back(&control);
+
+        assert_eq!(observed, Ok(ControlValue::Decibels(target_db)));
+        restore.expect("original gain is restored");
+        assert_eq!(restored, Ok(ControlValue::Decibels(original_db)));
+    }
+
+    #[cfg(windows)]
+    fn live_boolean_round_trip(backend: &mut WindowsBackend, control: &ControlId) {
+        let original = backend
+            .read_back(control)
+            .expect("original boolean value is readable");
+        let ControlValue::Boolean(original_enabled) = original else {
+            panic!("control is not a boolean value");
+        };
+        let temporary = !original_enabled;
+        backend
+            .set_control(&ControlCommand {
+                control: control.clone(),
+                value: ControlValue::Boolean(temporary),
+            })
+            .expect("temporary write succeeds");
+        let observed = backend.read_back(control);
+
+        let restore = backend.set_control(&ControlCommand {
+            control: control.clone(),
+            value: ControlValue::Boolean(original_enabled),
+        });
+        let restored = backend.read_back(control);
+
+        assert_eq!(observed, Ok(ControlValue::Boolean(temporary)));
+        restore.expect("original boolean value is restored");
+        assert_eq!(restored, Ok(ControlValue::Boolean(original_enabled)));
     }
 
     #[cfg(not(windows))]

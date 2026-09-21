@@ -1,12 +1,13 @@
 use iced::theme::Palette;
-use iced::widget::{button, column, container, progress_bar, row, scrollable, space, text};
+use iced::widget::{button, column, container, progress_bar, row, scrollable, slider, space, text};
 use iced::{
     Alignment, Background, Color, Element, Fill, Length, Size, Subscription, Task, Theme, border,
     window,
 };
 use lewitt_core::{
-    BackendError, BusId, ChannelId, ControlId, ControlValue, Controller, ControllerConfig,
-    ControllerEvent, DeviceCapabilities, DeviceEvent, DeviceInfo, DeviceSnapshot, WorkerOperation,
+    BackendError, BusId, ChannelId, ControlAccess, ControlCommand, ControlId, ControlValue,
+    Controller, ControllerConfig, ControllerEvent, DeviceCapabilities, DeviceEvent, DeviceInfo,
+    DeviceSnapshot, WorkerOperation,
 };
 use std::time::{Duration, Instant};
 
@@ -18,8 +19,8 @@ use crate::tray::Tray;
 
 const WINDOW_SIZE: Size = Size::new(1040.0, 760.0);
 const MIN_WINDOW_SIZE: Size = Size::new(780.0, 620.0);
-const CONTROLLER_TICK: Duration = Duration::from_millis(50);
-const VISIBLE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(1);
+const CONTROLLER_TICK: Duration = Duration::from_micros(16_667);
+const VISIBLE_SNAPSHOT_INTERVAL: Duration = Duration::from_micros(16_667);
 const HIDDEN_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(5);
 
 const BACKGROUND: Color = Color::from_rgb(0.035, 0.043, 0.055);
@@ -62,6 +63,7 @@ struct State {
     capabilities: Option<DeviceCapabilities>,
     snapshot: DeviceSnapshot,
     next_snapshot_refresh: Instant,
+    snapshot_refresh_pending: bool,
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     tray: Option<Tray>,
 }
@@ -90,6 +92,7 @@ impl State {
             capabilities: None,
             snapshot: DeviceSnapshot::default(),
             next_snapshot_refresh: Instant::now() + VISIBLE_SNAPSHOT_INTERVAL,
+            snapshot_refresh_pending: false,
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             tray: None,
         }
@@ -121,6 +124,7 @@ impl State {
         {
             self.report_internal_error("raising the meter polling rate", &error);
         }
+        self.next_snapshot_refresh = Instant::now();
         if let Some(id) = self.window {
             return restore_and_raise_window(id);
         }
@@ -170,6 +174,7 @@ impl State {
         self.device = None;
         self.capabilities = None;
         self.snapshot = DeviceSnapshot::default();
+        self.snapshot_refresh_pending = false;
         self.runtime_notice = None;
         if let Some(controller) = &self.controller {
             let disconnect_error = controller.disconnect().err();
@@ -185,10 +190,14 @@ impl State {
     }
 
     fn refresh(&mut self) {
-        if let Some(controller) = &self.controller
-            && let Err(error) = controller.refresh()
-        {
-            self.report_internal_error("snapshot refresh", &error);
+        if self.snapshot_refresh_pending {
+            return;
+        }
+        if let Some(controller) = &self.controller {
+            match controller.refresh() {
+                Ok(()) => self.snapshot_refresh_pending = true,
+                Err(error) => self.report_internal_error("snapshot refresh", &error),
+            }
         }
     }
 
@@ -201,6 +210,7 @@ impl State {
                     self.report_internal_error("lowering the meter polling rate", &error);
                 }
                 if let Some(id) = self.window.take() {
+                    self.next_snapshot_refresh = Instant::now() + HIDDEN_SNAPSHOT_INTERVAL;
                     window::close(id)
                 } else {
                     Task::none()
@@ -267,6 +277,7 @@ impl State {
         }
 
         if self.device_phase == DevicePhase::Connected
+            && !self.snapshot_refresh_pending
             && Instant::now() >= self.next_snapshot_refresh
         {
             self.refresh();
@@ -296,6 +307,7 @@ impl State {
                     self.device = None;
                     self.capabilities = None;
                     self.snapshot = DeviceSnapshot::default();
+                    self.snapshot_refresh_pending = false;
                 }
             }
             ControllerEvent::Connected {
@@ -312,8 +324,14 @@ impl State {
                 self.device = Some(device);
                 self.capabilities = Some(capabilities);
                 self.snapshot = snapshot;
+                self.snapshot_refresh_pending = false;
                 self.runtime_notice = None;
-                self.next_snapshot_refresh = Instant::now() + VISIBLE_SNAPSHOT_INTERVAL;
+                let interval = if self.lifecycle.window_visible() {
+                    VISIBLE_SNAPSHOT_INTERVAL
+                } else {
+                    HIDDEN_SNAPSHOT_INTERVAL
+                };
+                self.next_snapshot_refresh = Instant::now() + interval;
             }
             ControllerEvent::Disconnected => {
                 tracing::warn!("device disconnected");
@@ -321,9 +339,11 @@ impl State {
                 self.device = None;
                 self.capabilities = None;
                 self.snapshot = DeviceSnapshot::default();
+                self.snapshot_refresh_pending = false;
             }
             ControllerEvent::Snapshot(snapshot) => {
                 self.snapshot = snapshot;
+                self.snapshot_refresh_pending = false;
             }
             ControllerEvent::ControlConfirmed { control, value } => {
                 self.snapshot.controls.insert(control, value);
@@ -331,6 +351,7 @@ impl State {
             }
             ControllerEvent::Device(DeviceEvent::Disconnected) => {
                 self.device_phase = DevicePhase::NoDevice;
+                self.snapshot_refresh_pending = false;
             }
             ControllerEvent::Device(
                 DeviceEvent::StateChanged { .. } | DeviceEvent::Connected { .. },
@@ -344,6 +365,9 @@ impl State {
                 error,
                 snapshot,
             } => {
+                if operation == WorkerOperation::ReadSnapshot {
+                    self.snapshot_refresh_pending = false;
+                }
                 if let Some(snapshot) = snapshot {
                     self.snapshot = snapshot;
                 }
@@ -403,6 +427,65 @@ impl State {
             .is_some()
     }
 
+    fn can_write(&self, control: &ControlId) -> bool {
+        self.capabilities.as_ref().is_some_and(|capabilities| {
+            capabilities.writes_enabled()
+                && capabilities
+                    .descriptor(control)
+                    .is_some_and(|descriptor| descriptor.access == ControlAccess::Writable)
+        })
+    }
+
+    fn queue_control_write(&mut self, control: ControlId, value: ControlValue) {
+        if !self.can_write(&control) {
+            self.runtime_notice = Some(self.text("notice.operation_unavailable").to_owned());
+            return;
+        }
+        let result = self.controller.as_ref().map_or_else(
+            || Err(lewitt_core::ControllerError::Stopped),
+            |controller| {
+                controller.set_control(ControlCommand {
+                    control: control.clone(),
+                    value: value.clone(),
+                })
+            },
+        );
+        match result {
+            Ok(()) => {
+                self.snapshot.controls.insert(control, value);
+            }
+            Err(error) => self.report_internal_error("queueing a control write", &error),
+        }
+    }
+
+    fn set_input_gain(&mut self, channel: ChannelId, gain_db: f32) {
+        self.queue_control_write(
+            ControlId::InputVolume { channel },
+            ControlValue::Decibels(gain_db),
+        );
+    }
+
+    fn set_high_pass(&mut self, channel: ChannelId, enabled: bool) {
+        self.queue_control_write(
+            ControlId::HighPass { channel },
+            ControlValue::Boolean(enabled),
+        );
+    }
+
+    fn set_phase_invert(&mut self, channel: ChannelId, enabled: bool) {
+        self.queue_control_write(
+            ControlId::PhaseInvert { channel },
+            ControlValue::Boolean(enabled),
+        );
+    }
+
+    fn set_phantom_power(&mut self, channel: ChannelId, enabled: bool) {
+        self.queue_control_write(
+            ControlId::PhantomPower { channel },
+            ControlValue::Boolean(enabled),
+        );
+    }
+
     fn integer(&self, control: &ControlId) -> Option<i32> {
         match self.snapshot.controls.get(control) {
             Some(ControlValue::Integer(value)) => Some(*value),
@@ -424,6 +507,10 @@ enum Message {
     Instance(InstanceCommand),
     SetLanguage(Language),
     Refresh,
+    SetInputGain(ChannelId, f32),
+    SetHighPass(ChannelId, bool),
+    SetPhaseInvert(ChannelId, bool),
+    SetPhantomPower(ChannelId, bool),
     ControllerTick,
     WindowCloseRequested(window::Id),
     WindowOpened(window::Id),
@@ -455,6 +542,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::Refresh => {
             state.refresh();
+            Task::none()
+        }
+        Message::SetInputGain(channel, gain_db) => {
+            state.set_input_gain(channel, gain_db);
+            Task::none()
+        }
+        Message::SetHighPass(channel, enabled) => {
+            state.set_high_pass(channel, enabled);
+            Task::none()
+        }
+        Message::SetPhaseInvert(channel, enabled) => {
+            state.set_phase_invert(channel, enabled);
+            Task::none()
+        }
+        Message::SetPhantomPower(channel, enabled) => {
+            state.set_phantom_power(channel, enabled);
             Task::none()
         }
         Message::ControllerTick => {
@@ -606,13 +709,19 @@ fn connected_view(state: &State) -> Element<'_, Message> {
         |value| format!("{value} samples"),
     );
 
+    let write_detail = if [ChannelId::Input1, ChannelId::Input2]
+        .into_iter()
+        .any(|channel| state.can_write(&ControlId::InputVolume { channel }))
+    {
+        state.text("status.hardware_writes_detail")
+    } else {
+        state.text("status.read_only_detail")
+    };
     let overview = container(
         row![
             column![
                 text(device_name).size(23),
-                text(state.text("status.read_only_detail"))
-                    .size(13)
-                    .color(TEXT_MUTED),
+                text(write_detail).size(13).color(TEXT_MUTED),
             ]
             .spacing(5)
             .width(Length::FillPortion(3)),
@@ -669,13 +778,25 @@ fn input_card<'a>(
 ) -> Element<'a, Message> {
     let gain = state.decibels(&ControlId::InputVolume { channel });
     let mute = state.boolean(&ControlId::InputMute { channel });
-    let phantom = state.boolean(&ControlId::PhantomPower { channel });
-    let high_pass = state.boolean(&ControlId::HighPass { channel });
-    let phase = state.boolean(&ControlId::PhaseInvert { channel });
+    let phantom_id = ControlId::PhantomPower { channel };
+    let phantom = state.boolean(&phantom_id);
+    let high_pass_id = ControlId::HighPass { channel };
+    let high_pass = state.boolean(&high_pass_id);
+    let phase_id = ControlId::PhaseInvert { channel };
+    let phase = state.boolean(&phase_id);
+    let high_pass_action = high_pass
+        .filter(|_| state.can_write(&high_pass_id))
+        .map(|enabled| Message::SetHighPass(channel, !enabled));
+    let phase_action = phase
+        .filter(|_| state.can_write(&phase_id))
+        .map(|enabled| Message::SetPhaseInvert(channel, !enabled));
+    let phantom_action = phantom
+        .filter(|_| state.can_write(&phantom_id))
+        .map(|enabled| Message::SetPhantomPower(channel, !enabled));
     let toggles = row![
-        state_pill(state, "control.phantom", phantom),
-        state_pill(state, "control.high_pass", high_pass),
-        state_pill(state, "control.phase", phase),
+        state_pill(state, "control.phantom", phantom, phantom_action),
+        state_pill(state, "control.high_pass", high_pass, high_pass_action),
+        state_pill(state, "control.phase", phase, phase_action),
     ]
     .spacing(6);
     channel_card(
@@ -685,6 +806,9 @@ fn input_card<'a>(
         mute,
         -7.0..=48.0,
         Some(toggles.into()),
+        state
+            .can_write(&ControlId::InputVolume { channel })
+            .then_some(channel),
     )
 }
 
@@ -720,7 +844,8 @@ fn output_card<'a>(state: &'a State, bus: BusId, title_key: &'static str) -> Ele
         row![state_pill(
             state,
             "control.output_mute",
-            state.boolean(&mute_id)
+            state.boolean(&mute_id),
+            None
         )]
         .spacing(6)
         .into()
@@ -732,6 +857,7 @@ fn output_card<'a>(state: &'a State, bus: BusId, title_key: &'static str) -> Ele
         None,
         -60.0..=0.0,
         mute_status,
+        None,
     )
 }
 
@@ -742,6 +868,7 @@ fn channel_card<'a>(
     endpoint_muted: Option<bool>,
     range: std::ops::RangeInclusive<f32>,
     toggles: Option<Element<'a, Message>>,
+    editable_input: Option<ChannelId>,
 ) -> Element<'a, Message> {
     let value = if endpoint_muted == Some(true) {
         state.text("state.muted").to_owned()
@@ -756,6 +883,18 @@ fn channel_card<'a>(
     } else {
         gain.unwrap_or(*range.start())
     };
+    let gain_control: Element<'a, Message> = if let Some(channel) = editable_input {
+        slider(range.clone(), bar_value, move |value| {
+            Message::SetInputGain(channel, value)
+        })
+        .step(1.0_f32)
+        .into()
+    } else {
+        progress_bar(range, bar_value)
+            .girth(7)
+            .style(|_| gain_bar_style())
+            .into()
+    };
     let mut content = column![
         row![
             column![
@@ -767,9 +906,7 @@ fn channel_card<'a>(
             text(value).size(22).color(ACCENT),
         ]
         .align_y(Alignment::Center),
-        progress_bar(range, bar_value)
-            .girth(7)
-            .style(|_| gain_bar_style()),
+        gain_control,
     ]
     .spacing(14);
     if let Some(toggles) = toggles {
@@ -786,6 +923,7 @@ fn state_pill<'a>(
     state: &'a State,
     label_key: &'static str,
     active: Option<bool>,
+    action: Option<Message>,
 ) -> Element<'a, Message> {
     let label = match active {
         Some(true) => format!("{} · {}", state.text(label_key), state.text("state.on")),
@@ -797,14 +935,21 @@ fn state_pill<'a>(
         ),
     };
     let is_active = active == Some(true);
-    container(
-        text(label)
-            .size(10)
-            .color(if is_active { Color::WHITE } else { TEXT_MUTED }),
-    )
-    .padding([5, 8])
-    .style(move |_| pill_style(is_active))
-    .into()
+    let label = text(label)
+        .size(10)
+        .color(if is_active { Color::WHITE } else { TEXT_MUTED });
+    if let Some(action) = action {
+        button(label)
+            .padding([5, 8])
+            .style(move |_, status| pill_button_style(status, is_active))
+            .on_press(action)
+            .into()
+    } else {
+        container(label)
+            .padding([5, 8])
+            .style(move |_| pill_style(is_active))
+            .into()
+    }
 }
 
 fn info_value(label: &str, value: String) -> Element<'_, Message> {
@@ -910,6 +1055,23 @@ fn pill_style(active: bool) -> container::Style {
         .border(border::rounded(16).width(1).color(color))
 }
 
+fn pill_button_style(status: button::Status, active: bool) -> button::Style {
+    let color = if active { ACCENT } else { BORDER };
+    let background = if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+        Color::from_rgb(0.11, 0.20, 0.20)
+    } else if active {
+        Color::from_rgb(0.08, 0.29, 0.26)
+    } else {
+        SURFACE_RAISED
+    };
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color: if active { Color::WHITE } else { TEXT_MUTED },
+        border: border::rounded(16).width(1).color(color),
+        ..button::Style::default()
+    }
+}
+
 fn gain_bar_style() -> progress_bar::Style {
     progress_bar::Style {
         background: Background::Color(SURFACE_RAISED),
@@ -974,6 +1136,13 @@ fn spawn_platform_controller() -> Result<Controller, lewitt_core::ControllerErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visible_hardware_polling_targets_sixty_hertz() {
+        assert_eq!(CONTROLLER_TICK, Duration::from_micros(16_667));
+        assert_eq!(VISIBLE_SNAPSHOT_INTERVAL, Duration::from_micros(16_667));
+        assert_eq!(HIDDEN_SNAPSHOT_INTERVAL, Duration::from_secs(5));
+    }
 
     #[test]
     fn foreground_boot_reserves_a_window() {

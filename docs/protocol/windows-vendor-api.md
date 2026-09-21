@@ -46,12 +46,15 @@ the C++ object's positional table: resolve a typed subset by export name. All
 firmware/DFU entries are prohibited regardless of signature confidence.
 
 The Rust Windows backend now implements this loading boundary for a strict
-read-only subset. It resolves 11 named exports, requires API 5.2, filters the
+subset. It resolves 12 named exports, requires API 5.2, filters the
 opened device by `VID_29C2&PID_0011` and the Stream 4x5 model string, and reads
 device properties, the 40-byte settings block, sample rate, clock source, and
-ASIO instance information. An explicitly ignored hardware test passed on the
-connected reference device. No Set, raw class/vendor, firmware, or DFU symbol
-is resolved by the backend.
+ASIO instance information. It resolves `AudioControlRequestSet` only for a
+full-block read-modify-write of Input 1/2 preamp gain, 48V phantom power,
+80 Hz high-pass, and phase-invert state. Explicitly ignored hardware tests
+changed each gain by 1 dB and toggled each boolean state, read every value
+back, restored the originals, and read the restored values on firmware
+`0x018A`. Raw class/vendor, firmware, and DFU symbols remain unresolved.
 
 ## Export inventory
 
@@ -65,7 +68,7 @@ project's scope.
 | 1 | `DllRegisterServer` | inventory; installer only |
 | 2 | `DllUnregisterServer` | inventory; installer only |
 | 3 | `TUSBAUDIO_AudioControlRequestGet` | exact |
-| 4 | `TUSBAUDIO_AudioControlRequestSet` | exact; no live write |
+| 4 | `TUSBAUDIO_AudioControlRequestSet` | exact; live Input 1/2 gain, 48V, 80 Hz high-pass, and phase-invert write/read-back/restore on firmware `0x018A` |
 | 5 | `TUSBAUDIO_CheckApiVersion` | exact |
 | 6 | `TUSBAUDIO_ClassVendorRequestIn` | inventory; no Stream 4x5 caller found |
 | 7 | `TUSBAUDIO_ClassVendorRequestOut` | inventory; do not expose raw writes |
@@ -376,17 +379,17 @@ backend must never write on enumeration/open, must preserve unknown bytes,
 must serialize calls on the controller worker, and must read back every write.
 If the control center is running, warn; on conflict, stop writes and refresh.
 
-## Remaining ABI work before Windows writes
+## Remaining ABI work before additional Windows writes
 
 - Recover only the additional export prototypes actually needed by the Rust
   backend; leave all other inventory entries unresolved.
 - Validate x64 packing with compile-time size/offset assertions.
 - Keep the implemented safe loader restricted to the registered absolute path,
-  API 5.2, and the exact read-only symbol set; add driver-version policy before
-  any future write work.
+  API 5.2, and the exact named-symbol subset; add driver-version policy before
+  any additional write work.
 - Validate one DSP read against the filter-driver layouts in
   [`windows-filter-driver.md`](windows-filter-driver.md); static recovery alone
   does not approve a runtime call.
-- Capture one property write at a time and add a sanitized golden fixture.
+- Capture one additional property write at a time and add a sanitized golden fixture.
 - Test close/disconnect/callback lifetime and simultaneous control-center use.
 - Never bind or expose DFU, firmware, raw class/vendor, or unchecked DSP calls.

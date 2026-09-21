@@ -119,7 +119,7 @@ fn diagnose() -> DiagnosticReport {
             vendor_api_path: Some(path.display().to_string()),
             writes_enabled: false,
             protocol_evidence_available: true,
-            detail: "registered vendor API path is valid; the application enables only the verified read-only ABI subset"
+            detail: "registered vendor API path is valid; the GUI can enable Input 1/2 gain, 48V, 80 Hz high-pass, and phase-invert writes after a connected device matches the verified firmware profile, while CLI set remains unavailable"
                 .into(),
         },
         Err(error) => DiagnosticReport {
@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnose_never_claims_writes_are_enabled() {
+    fn diagnose_does_not_claim_cli_writes_are_enabled() {
         let report = diagnose();
         assert!(!report.writes_enabled);
         if report.vendor_api_found {

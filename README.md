@@ -7,9 +7,11 @@ An experimental, cross-platform control panel for the Lewitt Stream 4x5.
 > compatibility.
 
 The project is at an early implementation stage. The Windows app can load the
-registered vendor API and display a verified read-only hardware snapshot. Real
-device writes stay disabled until each operation has a documented, sanitized
-hardware fixture and an opt-in hardware test.
+registered vendor API, display a hardware snapshot, and write Input 1/2 preamp
+gain, 48V phantom power, 80 Hz high-pass, and phase-invert state on the
+validated `0x018A` firmware profile. Every other device write stays disabled
+until that operation has a documented, sanitized hardware fixture and an
+opt-in hardware test.
 
 ## Scope
 

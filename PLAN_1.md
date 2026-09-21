@@ -36,11 +36,14 @@
   端点可在主实例退出后重新占用，并有真实命名管道集成测试覆盖。
 - 显式自启确认、单实例 IPC 有界消息格式以及中英文资源键一致性检查已完成。
 - Windows 后端已按 64 位 CLSID 注册绝对路径动态加载原厂 DLL，仅解析经过文档确认的
-  11 个只读导出；已实现 Stream 4x5 严格 VID/PID/型号筛选、句柄 RAII、API 5.2 校验、
-  设备属性、40 字节硬件状态、采样率、时钟和 ASIO buffer 读取。写入、raw vendor、
-  固件和 DFU 导出均不解析，所有真实写入继续返回 `Unsupported`。
-- 已增加显式 ignored 的 Windows 真机只读测试；本机连接的 Stream 4x5 已通过枚举、
-  打开、snapshot 读取和关闭验证。Linux 后端仍为安全骨架。
+  12 个导出；已实现 Stream 4x5 严格 VID/PID/型号筛选、句柄 RAII、API 5.2 校验、
+  设备属性、40 字节硬件状态、采样率、时钟和 ASIO buffer 读取，并以完整块
+  read-modify-write 开放固件 `0x018A` 的 Input 1/2 前级增益、48V、80 Hz 高通与相位反转。
+  raw vendor、固件和 DFU 导出仍不解析。
+- 已增加显式 ignored 的 Windows 真机只读与写入恢复测试；本机连接的 Stream 4x5 已
+  通过枚举、打开、snapshot 读取和关闭验证；Input 1/2 增益分别临时变化 1 dB，高通
+  48V、高通与相位状态分别临时反转后均回读匹配，并成功恢复原值且再次回读确认。Linux 后端仍
+  为安全骨架。
 - `lewittctl diagnose [--json]` 已更新为报告已验证的 Windows 只读 ABI 子集；其余要求的
   CLI 命令已建立语法，未验证操作会明确拒绝执行。
 - 已建立 `docs/protocol/stream4x5.md` 证据门禁和 Linux udev 示例；已完成控制中心、
@@ -52,18 +55,20 @@
   累积；已记录 WDM/插件回调、DSP 属性校验和 40 字节内部电平记录，并加入不含二进制、
   反汇编正文、PCM 或设备标识的静态 fixture。
 - GUI 已接入真实 platform backend 与 controller worker，提供设备连接状态、手动/周期
-  刷新、设备/固件/采样率/时钟/ASIO buffer 概览，以及 Input 1/2 前级增益、硬件输出
-  增益、Windows 驱动输出 mute、Input 1/2 推子端点状态、48V、80 Hz 高通和相位的只读
-  卡片；Input 3/4 明确显示为固定硬件电平，不伪装成可调增益；窗口隐藏时降低
-  snapshot 刷新频率。
+  刷新、设备/固件/采样率/时钟/ASIO buffer 概览；固件 `0x018A` 上 Input 1/2 前级增益
+  以 1 dB 滑杆写入并由 worker 约 30 Hz 合并，48V、80 Hz 高通与相位以按钮立即写入；其他输出增益、
+  Windows 驱动输出 mute 和 Input 1/2 推子端点状态仍只读。Input 3/4 明确显示为固定硬件
+  电平，不伪装成可调增益；窗口可见时以最多一个在途请求、约 60 Hz 刷新 snapshot 以
+  跟随物理旋钮，隐藏时降至 0.2 Hz。
 - Windows x64 本机已通过格式检查、workspace 全特性测试、严格 Clippy 和文档构建。
 
 ### 当前未完成和外部门禁
 
-- 已有静态 ABI 分析、脱敏只读 fixture、一台 Stream 4x5 的 Windows vendor-API
-  只读验证及 Rust backend 真机 snapshot 验证；尚无 USBPcap 原始总线证据、Linux
-  `rusb` 直连、Windows DSP meter 动态验证或任何硬件写入验证，因此真实写控制、
-  实时电平和 Lewitt XML 映射仍不得标记为可用。
+- 已有静态 ABI 分析、脱敏读/写 fixture、一台 Stream 4x5 的 Windows vendor-API
+  读验证、Rust backend 真机 snapshot 验证及 Input 1/2 增益、48V、高通与相位写入/回读/恢复验证；尚无
+  USBPcap 原始总线证据、Linux `rusb` 直连或 Windows DSP meter 动态验证。除固件
+  `0x018A` 的 Windows Input 1/2 增益、48V、高通和相位外，其他真实写控制、实时电平和 Lewitt XML 映射
+  仍不得标记为可用。
 - 已确认混音矩阵、Ducker、FX 和软件 Peak/RMS 表属于
   `dgtstream_mixer_ducker.sys` 上层过滤驱动的 DSP IOCTL，不是设备 USB 协议；Linux
   版本需另行设计 PipeWire/ALSA 用户态路由与 DSP，不能把这些属性块直接发给 `rusb`。
@@ -76,25 +81,29 @@
   内核 DSP 与其他主机音频栈表现出不同延迟。
 - `x86_64-unknown-linux-gnu` 目标已通过 workspace 全特性交叉检查和严格 Clippy；尚未在
   Arch Linux 环境完成原生构建、KSNI 运行及 ALSA/PipeWire 共存验证。
-- Iced/托盘和只读硬件面板已通过 Windows x64 编译、单元测试和静态检查，但本轮
+- Iced/托盘和当前硬件面板已通过 Windows x64 编译、单元测试和静态检查，但本轮
   computer-use 原生应用接口不可用，尚未完成截图/桌面交互验收与 Arch KSNI 运行验证。
 - Linux `XDG_RUNTIME_DIR` Unix socket、KSNI、X11/Wayland 条件代码已通过
   `x86_64-unknown-linux-gnu` 交叉编译和严格 Clippy，但尚未在真实 Arch 图形会话运行；
-  平台自启写入、完整控制页面和完整 CLI 行为仍待实现。
-- 当前仓库没有任何硬件写入测试；以后新增时必须保持显式 opt-in。
+  完整控制页面、完整 CLI 行为以及最后阶段的平台自启写入仍待实现。
+- 当前仓库有四个显式 ignored 的 Windows Input 1/2 增益、48V、高通与相位硬件写入恢复测试；以后新增
+  真机写测试仍必须保持显式 opt-in，并在断言前恢复测试前状态。
 
 ### 下一实施批次
 
-1. 在 Arch 环境编译并运行验证 `XDG_RUNTIME_DIR` Unix socket、KSNI 托盘和退出清理。
-2. 实现平台自启写入层并保持显式确认门禁。
-3. 在 Arch 环境使用系统 `libusb` 实现仅 VID/PID 的只读发现与权限诊断，并验证不解绑
+1. 继续按一次一个属性的方式验证 Windows 固件 `0x018A` 写入；下一项优先选择三组
+   硬件输出增益，完成临时变化、回读、恢复和脱敏 fixture 后再开放 GUI。
+2. 单独验证 Windows DSP 输出 mute；不得把 40 字节设备块的六个未映射状态位当作 mute。
+3. 在 Arch 环境编译并运行验证 `XDG_RUNTIME_DIR` Unix socket、KSNI 托盘和退出清理，
+   并使用系统 `libusb` 实现仅 VID/PID 的只读发现与权限诊断，验证不解绑
    `snd-usb-audio` 时能否发送 interface-recipient EP0 只读请求。
-4. 用 USBPcap 确认文档中的 setup packet，一次只抓取、验证并开放一个真实属性。
+4. 用 USBPcap 确认文档中的 setup packet，一次只抓取、验证并开放一个 Linux 属性。
 5. 单独验证设备侧输出 mute：关闭 Windows DSP mute，只通过原厂推子将一个输出对降至
    `-60 dB`，对照 40 字节块 `12..17`、USBPcap、关闭控制中心后的实际输出及重新连接
    后状态，并恢复测试前增益；在此之前不写入或公开这六个状态位。
 6. 为 Linux 物理输入/输出 RMS 另立被动 PipeWire/ALSA meter provider，不混入 USB
    后端，不实现混音、虚拟通道、Ducker 或 FX。
+7. 最后实现 Windows 当前用户启动项与 Arch XDG autostart 写入层，并保持显式确认门禁。
 
 ## 架构与公开接口
 
@@ -123,7 +132,7 @@
 - 首版 GUI 不提供 Ducker、Compressor、EQ 或 Reverb 控件；Linux 也不实现 Windows
   驱动提供的虚拟通道和混音矩阵。
 - 所有设备调用集中到一个工作线程；连续推子以约 30 Hz 合并写入，离散开关立即写入，每次成功写入后回读。失败时恢复设备真实值并显示错误。
-- GUI 可见时按 30 Hz 读取电平；隐藏到托盘后降至 2 Hz，只维持连接和状态检测，使用有界通道丢弃过时帧。
+- GUI 可见时按约 60 Hz 刷新硬件 snapshot 并读取电平，以跟随设备物理旋钮；隐藏到托盘后电平降至 2 Hz、snapshot 降至 0.2 Hz，只维持连接和状态检测，使用有界通道丢弃过时帧。
 
 ## 实施阶段
 
@@ -147,8 +156,9 @@
 - 实现热插拔、断线重连、权限错误和未知固件保护；未验证固件默认只读。
 - 原厂控制中心同时运行时只警告，不终止进程；发生占用或状态覆盖时停止写入、刷新全量状态并提示用户。
 
-状态：Windows 已实现动态加载和真机只读 snapshot，仍禁止全部真实写入和未经验证的
-DSP meter；Linux 只读发现及全部 USB 协议操作尚未实现。
+状态：Windows 已实现动态加载、真机 snapshot，以及固件 `0x018A` 的 Input 1/2 前级
+增益、48V、80 Hz 高通与相位写入/回读/恢复；其他真实写入和未经验证的 DSP meter 仍禁止。Linux 只读发现及
+全部 USB 协议操作尚未实现。
 
 ### 3. GUI、托盘与自启
 
@@ -161,9 +171,9 @@ DSP meter；Linux 只读发现及全部 USB 协议操作尚未实现。
 - 使用 Windows named pipe / Linux Unix socket 保证单实例；再次手动启动时通知已有实例显示窗口。
 
 状态：Iced daemon、托盘交互、生命周期、语言资源、自启同意状态、IPC 消息格式、
-Windows 命名管道和首版只读硬件面板已完成并通过 Windows 编译及测试；Linux Unix
+Windows 命名管道和首版硬件面板已完成，Input 1/2 增益滑杆、48V、80 Hz 高通与相位按钮已接入写入 worker，并通过 Windows 编译及测试；Linux Unix
 socket、KSNI、X11/Wayland 已通过 Linux 目标交叉编译和严格 Clippy，但尚未在 Arch
-运行验证；Windows 截图/交互验收、自启写入、可写控件、完整页面和 Arch KSNI 运行
+运行验证；Windows 截图/交互验收、其余可写控件、完整页面、Arch KSNI 运行和最后阶段的自启写入
 验收尚未实现。
 
 ### 4. 预设与 CLI

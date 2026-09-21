@@ -14,16 +14,17 @@ The Windows ABI is documented separately in
 |---|---|
 | S | Recovered by static analysis of the installed 2.3.0 control center, `stream4x5.dll`, vendor API, and driver package. |
 | R | Repeated successfully as a read-only call against one connected Stream 4x5 through the registered 64-bit vendor API. |
+| W | Written through the registered Windows vendor API, read back, restored, and read back again on the connected Stream 4x5. |
 | U | Confirmed as the actual USB setup packet by USBPcap or direct Linux `libusb`/`rusb` observation. |
 
-The findings below have S and, where stated, R evidence. There is no U evidence
+The findings below have S and, where stated, R or W evidence. There is no U evidence
 yet. In particular, the vendor API can transform a request before it reaches
 the USB bus, so a successful Windows API call is not by itself a Linux-ready
 golden capture.
 
 ## Evidence snapshot
 
-- Analysis date: 2026-09-20.
+- Analysis date: 2026-09-21.
 - Vendor API version returned by `TUSBAUDIO_GetApiVersion`: `5.2`
   (`0x00050002`).
 - Installed API/driver file version: `4.67.0.0`.
@@ -31,12 +32,17 @@ golden capture.
 - Device enumeration, open, close, configuration-descriptor read, current
   sample-rate read, clock reads, and the three private read operations below
   succeeded.
-- No control, sample-rate, mixer, DSP, firmware, or DFU write was performed.
+- Input 1 and Input 2 preamp gain were each changed temporarily by 1 dB, and
+  both 48V phantom-power, 80 Hz high-pass, and phase-invert states were
+  temporarily inverted through the Windows vendor API after input safety was
+  confirmed. Every value was read back, restored, and read back again. No
+  other control, sample-rate, mixer, DSP, firmware, or DFU write was performed.
 - Serial number and Windows device-instance ID were intentionally discarded.
 
-Firmware `0x018A` is an observation, not an approved writable firmware. It is
-below the control center's `0x0200` behaviour boundary and must remain read-only
-until write captures are available.
+Firmware `0x018A` is approved only for the Windows vendor-API Input 1/2 preamp
+gain, 48V phantom-power, 80 Hz high-pass, and phase-invert operations validated
+below. It remains read-only for every other property. Other firmware versions
+remain fully read-only.
 
 ## USB configuration
 
@@ -97,7 +103,7 @@ All three operations use `bRequest = 0x03`, selector `0`, interface `0`:
 
 | Operation | Direction | `wValue` | `wIndex` | Length | Evidence |
 |---|---|---:|---:|---:|---|
-| Settings | GET / SET | `0x0000` | `0x3300` | 40 | S+R for GET; S only for SET |
+| Settings | GET / SET | `0x0000` | `0x3300` | 40 | S+R for GET; S+W for Input 1/2 gain, 48V, 80 Hz high-pass, and phase-invert SET |
 | Status | GET | `0x0001` | `0x3300` | 20 | S+R |
 | Persistent configuration | GET / SET | `0x0002` | `0x3300` | 64 | S+R for GET; S only for SET |
 
@@ -130,6 +136,38 @@ write for outputs 1/2, 3/4, and 5/6. Recovered code also contains pairing
 logic for the stored Input 3/4 fields, but the official UI does not expose
 hardware gain or mute controls for Input 3/4. Those fields therefore remain
 structural observations and are not public backend capabilities.
+
+The Windows backend now exposes Input 1/2 preamp gain as writable in 1 dB
+steps on firmware `0x018A`. It first reads the complete 40-byte block, changes
+only offsets `18..19` plus `26` for Input 1 or `20..21` plus `27` for Input 2,
+then writes the complete block. `-7 dB` sets the corresponding endpoint state
+byte to `1`; all higher values clear it. A live test changed both inputs by
+1 dB, verified both read-backs, restored the original values, and verified the
+restored values. The sanitized encoding and validation record is
+[`vendor-api-input-gain-write-v1.json`](../../fixtures/stream4x5/vendor-api-input-gain-write-v1.json).
+This is Windows API evidence, not USB packet evidence; it does not approve a
+Linux write implementation.
+
+The same read-modify-write path now exposes Input 1/2 80 Hz high-pass on
+firmware `0x018A`. It changes only byte `30` for Input 1 or byte `31` for Input
+2 (`0` flat, `1` enabled). A live test inverted both values, verified both
+read-backs, restored the originals, and verified the restored values. The
+sanitized encoding and validation record is
+[`vendor-api-high-pass-write-v1.json`](../../fixtures/stream4x5/vendor-api-high-pass-write-v1.json).
+
+Input 1/2 phase inversion uses the same validated path and changes only byte
+`34` for Input 1 or byte `35` for Input 2 (`0` normal polarity, `1` inverted).
+A live test inverted both values, verified both read-backs, restored the
+originals, and verified the restored values. The sanitized encoding and
+validation record is
+[`vendor-api-phase-invert-write-v1.json`](../../fixtures/stream4x5/vendor-api-phase-invert-write-v1.json).
+
+Input 1/2 48V phantom power uses bytes `38` and `39` (`0` off, `1` on). After
+both physical inputs were confirmed disconnected or phantom-safe, a live test
+inverted both values, verified both read-backs, restored the originals, and
+verified the restored values. The capability is writable only on the approved
+firmware profile. The sanitized record is
+[`vendor-api-phantom-write-v1.json`](../../fixtures/stream4x5/vendor-api-phantom-write-v1.json).
 
 The official UI exposes output mute as an independent button, but those buttons
 are **not** bytes `12..17` in this device block. In a simultaneous read-only
@@ -173,13 +211,15 @@ fader values into the input state bytes:
 - recovered internal Input 3/4 handling maps raw zero to its state flags, but
   there is no corresponding official hardware-gain control.
 
-The public read-only backend exposes Windows DSP output mute state, Input 1/2
-preamp gain and their derived endpoint state, but does not expose Input 3/4
-level/state fields or the six unmapped output flags. Device SET traffic is
-still static-only evidence: do not enable any write without a one-property
-capture and read-back test. The UI-derived Input 1/2 range is `-7..48 dB`, and
-the output slider range is `-60..0 dB`; rejected values and firmware-specific
-ranges are untested.
+The public backend exposes Windows DSP output mute state as read-only, Input
+1/2 preamp gain, 48V phantom power, 80 Hz high-pass, and phase inversion as
+writable on the approved profile, and their derived endpoint state as
+read-only. It does not expose Input 3/4 level/state fields or the six unmapped
+output flags. All device SET traffic except these validated Input 1/2
+operations remains static-only evidence: do not enable another write without
+a one-property capture and read-back test. The UI-derived Input 1/2 range is
+`-7..48 dB`, and the output slider range is `-60..0 dB`; rejected values and
+firmware-specific ranges outside the validated profile are untested.
 
 A sanitized read-only observation and decoder expectation is stored in
 [`fixtures/stream4x5/vendor-api-read-v1.json`](../../fixtures/stream4x5/vendor-api-read-v1.json).

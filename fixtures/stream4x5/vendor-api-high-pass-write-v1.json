@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "source": "sanitized Windows vendor-API high-pass encoding plus live write/read-back/restore validation",
+  "sanitization": {
+    "contains_serial_number": false,
+    "contains_device_instance_id": false,
+    "contains_firmware_image": false,
+    "contains_raw_usb_capture": false
+  },
+  "environment": {
+    "validation_date": "2026-09-21",
+    "vendor_api": "5.2",
+    "vendor_api_file_version": "4.67.0.0",
+    "device_firmware_raw": "0x018A"
+  },
+  "logical_call": {
+    "export": "TUSBAUDIO_AudioControlRequestSet",
+    "entity_id": "0x33",
+    "request": "0x03",
+    "control_selector": "0x00",
+    "channel_or_mixer_control": "0x00",
+    "length": 40,
+    "timeout_ms": 500
+  },
+  "golden_encoding": {
+    "control": "input_1_80_hz_high_pass",
+    "value": false,
+    "before_block_hex": "00f400f400ee00ee00ee00ee000000000000002c00fa000000000000010101010000000000000100",
+    "changed_offsets": [30],
+    "expected_written_block_hex": "00f400f400ee00ee00ee00ee000000000000002c00fa000000000000010100010000000000000100",
+    "encoding": "one byte per input; zero is flat and one enables the 80 Hz high-pass filter"
+  },
+  "live_validation": {
+    "controls": ["input_1_80_hz_high_pass", "input_2_80_hz_high_pass"],
+    "procedure": "read original; write the inverse boolean; read back; restore original; read back",
+    "result": "both temporary values and both restored values matched",
+    "test": "tests::live_high_pass_round_trip_restores_original_values"
+  },
+  "limitations": [
+    "The successful write used the registered Windows vendor API; the underlying USB setup packet has not been captured with USBPcap.",
+    "Only firmware 0x018A and the Input 1/2 80 Hz high-pass controls are approved by this fixture.",
+    "Failure behavior and concurrent Lewitt Control Center interaction remain unverified."
+  ]
+}

@@ -26,7 +26,7 @@ impl Default for ControllerConfig {
             command_capacity: 64,
             event_capacity: 64,
             continuous_write_interval: Duration::from_millis(33),
-            visible_meter_interval: Duration::from_millis(33),
+            visible_meter_interval: Duration::from_micros(16_667),
             hidden_meter_interval: Duration::from_millis(500),
             event_poll_interval: Duration::from_millis(250),
             idle_wakeup_interval: Duration::from_millis(100),
@@ -595,6 +595,14 @@ where
 mod tests {
     use super::*;
     use crate::{MockBackend, MockOperation};
+
+    #[test]
+    fn default_visible_meter_polling_targets_sixty_hertz() {
+        assert_eq!(
+            ControllerConfig::default().visible_meter_interval,
+            Duration::from_micros(16_667)
+        );
+    }
 
     fn quiet_config() -> ControllerConfig {
         ControllerConfig {
