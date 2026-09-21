@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "source": "offline static analysis of the installed signed x64 filter driver",
+  "sanitization": {
+    "contains_proprietary_binary": false,
+    "contains_disassembly_bytes": false,
+    "contains_build_machine_path": false,
+    "contains_serial_number": false,
+    "contains_device_instance_id": false,
+    "contains_pcm_capture": false,
+    "contains_usb_capture": false
+  },
+  "artifact": {
+    "file_name": "dgtstream_mixer_ducker.sys",
+    "architecture": "x86_64",
+    "size_bytes": 200392,
+    "sha256": "5e6a2890a73c80d0f8c7b1c7524faa45f85ca66d990f46e18f683b112d085983",
+    "file_version": "4.67.0.0",
+    "product_version": "4.67.0.0 x64 release",
+    "authenticode_status": "valid",
+    "signer": "Microsoft Windows Hardware Compatibility Publisher",
+    "exports": 0,
+    "imported_modules": ["ntoskrnl.exe", "HAL.dll"]
+  },
+  "installation": {
+    "device_hardware_id": "USB\\VID_29C2&PID_0011",
+    "driver_role": "upper_filter",
+    "service_type": "kernel_driver",
+    "start_type": "demand",
+    "plugin_enabled": true
+  },
+  "recovered_callbacks": {
+    "configure_rva": "0x18f0",
+    "dsp_property_get_rva": "0x1bd0",
+    "pcm_process_path_a_rva": "0x2190",
+    "pcm_process_path_b_rva": "0x2550",
+    "dsp_property_set_rva": "0x2850"
+  },
+  "dsp_property": {
+    "common_header_size": 8,
+    "signatures": {
+      "mixer": 77,
+      "ducker": 68,
+      "fx": 70
+    },
+    "mixer_properties": [
+      {"id": 42, "direction": "get", "minimum_size": 16},
+      {"id": "100..106", "direction": "get", "size": 12},
+      {"id": 200, "direction": "get_set", "size_rule": "8 + N * 8"},
+      {"id": 400, "direction": "get_set", "size": 14},
+      {"id": 401, "direction": "get_set", "size": 20, "role": "meter_active"},
+      {"id": 402, "direction": "get", "size": 20, "role": "meter_value"},
+      {"id": 500, "direction": "get", "size": 68, "role": "performance_counters"}
+    ],
+    "ducker_instance_count": 3,
+    "fx_property_ids": "1..9"
+  },
+  "meter": {
+    "public_property_id": 402,
+    "record_size": 40,
+    "record_offsets": {
+      "active": 0,
+      "peak_or_square_accumulator": 8,
+      "accumulator_overflow_count": 16,
+      "rms_window_sample_count": 20,
+      "processed_sample_cursor": 24,
+      "last_read_cursor": 28,
+      "cached_rms_q8_24": 32,
+      "cached_rms_cursor": 36
+    },
+    "rms_window_samples": "floor((40 * sample_rate + 500) / 1000)",
+    "inactive_after_unread_samples": "5 * sample_rate",
+    "cursor_unit": "pcm_samples"
+  },
+  "conclusions": [
+    "The mixer, attenuation, Ducker, FX, and meter algorithms operate on host PCM buffers.",
+    "DSP property blocks are driver-plugin ABI and are not Stream 4x5 USB requests.",
+    "The filter analysis does not identify a dedicated ASIO or meter USB endpoint."
+  ],
+  "limitations": [
+    "No kernel callback or DSP-property request was executed during this analysis.",
+    "The two PCM callback directions are not named because the binary does not retain their framework symbols.",
+    "This fixture does not approve any read or write operation for application use."
+  ]
+}

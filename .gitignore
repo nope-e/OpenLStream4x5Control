@@ -1,0 +1,15 @@
+/target/
+*.dll
+*.exe
+*.sys
+*.pcap
+*.pcapng
+*.cab
+*.msi
+*.msix
+*.bin
+*.hex
+*.dfu
+.idea/
+.vscode/
+

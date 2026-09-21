@@ -1,0 +1,4 @@
+# Example udev rule for Lewitt Stream 4x5 control access.
+# Install as /etc/udev/rules.d/99-lewitt-stream4x5.rules, reload udev rules,
+# and reconnect the device. Do not run the GUI as root.
+SUBSYSTEM=="usb", ATTR{idVendor}=="29c2", ATTR{idProduct}=="0011", TAG+="uaccess"

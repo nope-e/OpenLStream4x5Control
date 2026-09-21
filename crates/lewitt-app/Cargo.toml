@@ -1,0 +1,27 @@
+[package]
+name = "lewitt-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+crossbeam-channel.workspace = true
+interprocess = "=2.4.4"
+lewitt-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+iced = { version = "=0.14.0", default-features = false, features = ["crisp", "thread-pool", "tiny-skia", "tokio"] }
+lewitt-backend-windows = { path = "../lewitt-backend-windows" }
+tray-icon = { version = "=0.25.1", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+iced = { version = "=0.14.0", default-features = false, features = ["crisp", "thread-pool", "tiny-skia", "tokio", "wayland", "x11"] }
+lewitt-backend-linux = { path = "../lewitt-backend-linux" }
+tray-icon = { version = "=0.25.1", default-features = false, features = ["ksni"] }
+
+[lints]
+workspace = true

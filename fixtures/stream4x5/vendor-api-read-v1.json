@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "source": "read-only observation through the registered Windows x64 vendor API",
+  "sanitization": {
+    "contains_serial_number": false,
+    "contains_device_instance_id": false,
+    "contains_firmware_image": false,
+    "contains_raw_capture": false
+  },
+  "environment": {
+    "vendor_api": "5.2",
+    "vendor_api_file_version": "4.67.0.0",
+    "device_firmware_raw": "0x018A"
+  },
+  "settings_read": {
+    "logical_call": {
+      "entity_id": "0x33",
+      "request": "0x03",
+      "control_selector": "0x00",
+      "channel_or_mixer_control": "0x00",
+      "length": 40,
+      "timeout_ms": 500
+    },
+    "statically_reconstructed_setup": {
+      "bmRequestType": "0xA1",
+      "bRequest": "0x03",
+      "wValue": "0x0000",
+      "wIndex": "0x3300",
+      "wLength": 40
+    },
+    "response_hex": "00f400f400ee00ee00ee00ee000000000000002c00fa000000000000010101010000000000000100",
+    "expected": {
+      "output_gain_db": [-12, -12, -18, -18, -18, -18],
+      "unmapped_output_state_flags": [false, false, false, false, false, false],
+      "exposed_input_preamp_gain_db": [44, -6],
+      "unexposed_input_3_4_level_fields_db": [0, 0],
+      "raw_input_state_flags": [false, false, true, true],
+      "high_pass": [true, true, false, false],
+      "phase_invert": [false, false, false, false],
+      "phantom_power": [true, false]
+    }
+  },
+  "dsp_output_attenuation_read": {
+    "logical_call": {
+      "export": "TUSBAUDIO_GetDspProperty",
+      "block_size": 14,
+      "signature": 77,
+      "property_id": 400,
+      "channel_type": 1,
+      "channel_indices": [0, 1, 2, 3, 4, 5]
+    },
+    "device_output_attenuation_raw_q8_24": [0, 0, 16720723, 16720723, 0, 0],
+    "expected_pair_mute": [true, false, true],
+    "observation": "Read while the official UI showed output pairs 1/2 and 5/6 muted and 3/4 unmuted. The six scalar values contain no device identifier or audio data."
+  },
+  "clock_reads": [
+    {
+      "name": "current_frequency",
+      "setup": ["0xA1", "0x01", "0x0100", "0x2900", 4],
+      "response_hex": "80bb0000",
+      "expected_hz": 48000
+    },
+    {
+      "name": "frequency_range",
+      "setup": ["0xA1", "0x02", "0x0100", "0x2900", 64],
+      "transferred": 14,
+      "response_hex": "010080bb000080bb000000000000"
+    },
+    {
+      "name": "clock_validity",
+      "setup": ["0xA1", "0x01", "0x0200", "0x2900", 1],
+      "response_hex": "01"
+    },
+    {
+      "name": "clock_selector",
+      "setup": ["0xA1", "0x01", "0x0100", "0x2800", 1],
+      "response_hex": "01"
+    }
+  ],
+  "crc16_modbus_test": {
+    "input": "62 zero bytes",
+    "crc": "0xAB01",
+    "stored_little_endian": "01ab",
+    "crc_over_64_bytes": "0x0000"
+  },
+  "limitations": [
+    "The setup packet for the private settings read is reconstructed from static analysis, not USBPcap.",
+    "No write was performed.",
+    "This fixture does not approve firmware 0x018A for writes."
+  ]
+}

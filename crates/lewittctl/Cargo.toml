@@ -1,0 +1,22 @@
+[package]
+name = "lewittctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+lewitt-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+lewitt-backend-windows = { path = "../lewitt-backend-windows" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+lewitt-backend-linux = { path = "../lewitt-backend-linux" }
+
+[lints]
+workspace = true
