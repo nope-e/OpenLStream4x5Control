@@ -1,4 +1,4 @@
-use crate::{ControlAccess, ControlCommand, ControlId, DeviceCapabilities};
+use crate::{ControlCommand, ControlId, DeviceCapabilities};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use thiserror::Error;
@@ -22,10 +22,6 @@ impl NativePreset {
         if self.name.trim().is_empty() {
             return Err(PresetError::EmptyName);
         }
-        if !capabilities.writes_enabled() {
-            return Err(PresetError::ReadOnlyFirmware);
-        }
-
         let mut seen = BTreeSet::new();
         for command in &self.controls {
             if !command.control.is_preset_safe() {
@@ -37,7 +33,7 @@ impl NativePreset {
             let descriptor = capabilities
                 .descriptor(&command.control)
                 .ok_or_else(|| PresetError::UnsupportedControl(command.control.clone()))?;
-            if descriptor.access != ControlAccess::Writable {
+            if !descriptor.writable {
                 return Err(PresetError::ReadOnlyControl(command.control.clone()));
             }
             descriptor
@@ -57,8 +53,6 @@ pub enum PresetError {
     UnsupportedSchema(u32),
     #[error("preset name must not be empty")]
     EmptyName,
-    #[error("firmware is read-only")]
-    ReadOnlyFirmware,
     #[error("control is excluded from presets: {0:?}")]
     ExcludedControl(ControlId),
     #[error("control occurs more than once: {0:?}")]
@@ -131,16 +125,6 @@ mod tests {
         assert_eq!(
             preset.validate(&capabilities()),
             Err(PresetError::ExcludedControl(control))
-        );
-    }
-
-    #[test]
-    fn independent_output_mute_is_preset_safe() {
-        assert!(
-            ControlId::OutputMute {
-                bus: crate::BusId::Output1_2,
-            }
-            .is_preset_safe()
         );
     }
 }

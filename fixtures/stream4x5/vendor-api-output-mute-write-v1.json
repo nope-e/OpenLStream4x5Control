@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "source": "sanitized Windows vendor-API DSP output-mute encoding plus live write/read-back/exact-restore validation",
+  "sanitization": {
+    "contains_serial_number": false,
+    "contains_device_instance_id": false,
+    "contains_firmware_image": false,
+    "contains_audio_data": false
+  },
+  "environment": {
+    "validation_date": "2026-09-22",
+    "vendor_api": "5.2",
+    "vendor_api_file_version": "4.67.0.0",
+    "device_firmware_raw": "0x018A"
+  },
+  "logical_call": {
+    "export": "TUSBAUDIO_SetDspProperty",
+    "signature": 77,
+    "property_id": 400,
+    "channel_type": 1,
+    "block_length": 14,
+    "encoding": "packed little-endian header, device channel index, and signed Q8.24 linear attenuation"
+  },
+  "golden_encoding": {
+    "control": "output_3_4_dsp_mute",
+    "left_channel_index": 2,
+    "right_channel_index": 3,
+    "observed_unmuted_raw_q8_24": [16720723, 16720723],
+    "mute_left_block_hex": "4d00000090010000010200000000",
+    "mute_right_block_hex": "4d00000090010000010300000000",
+    "restore_left_block_hex": "4d0000009001000001025323ff00",
+    "restore_right_block_hex": "4d0000009001000001035323ff00"
+  },
+  "live_validation": {
+    "procedure": "select a currently non-muted pair; save both exact Q8.24 values; write zero to both; read back; restore both exact values; read back",
+    "result": "both temporary zero values and both exact restored Q8.24 values matched",
+    "test": "tests::live_output_mute_property_round_trip_restores_original_values"
+  },
+  "limitations": [
+    "The reversible SET ABI is validated, but this fixture does not approve exposing output mute as writable without a recoverable unmute baseline.",
+    "An output pair that is already muted has no readable pre-mute attenuation value.",
+    "Recovered control-center logic derives unmute attenuation from routing selection, global mute and solo state, pad state, and preset attenuation; hard-coding unity is not approved.",
+    "This is Windows host-filter state and is not a Stream 4x5 USB request."
+  ]
+}

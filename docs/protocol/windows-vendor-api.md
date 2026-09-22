@@ -3,7 +3,7 @@
 This is a clean-room interface note for implementing the Windows backend. It
 contains no vendor binary, decompiled source, firmware image, serial number, or
 device-instance path. All offsets and signatures below came from static
-analysis plus narrowly scoped read-only probes.
+analysis plus narrowly scoped read and reversible write probes.
 
 ## Analysed artifacts
 
@@ -46,15 +46,18 @@ the C++ object's positional table: resolve a typed subset by export name. All
 firmware/DFU entries are prohibited regardless of signature confidence.
 
 The Rust Windows backend now implements this loading boundary for a strict
-subset. It resolves 12 named exports, requires API 5.2, filters the
+named subset, requires API 5.2, filters the
 opened device by `VID_29C2&PID_0011` and the Stream 4x5 model string, and reads
 device properties, the 40-byte settings block, sample rate, clock source, and
 ASIO instance information. It resolves `AudioControlRequestSet` only for a
 full-block read-modify-write of Input 1/2 preamp gain, 48V phantom power,
-80 Hz high-pass, and phase-invert state. Explicitly ignored hardware tests
-changed each gain by 1 dB and toggled each boolean state, read every value
-back, restored the originals, and read the restored values on firmware
-`0x018A`. Raw class/vendor, firmware, and DFU symbols remain unresolved.
+80 Hz high-pass, phase-invert state, the three physical output gains, and
+paired hardware output mute.
+Explicitly ignored hardware tests changed every input and output gain by 1 dB
+and toggled each boolean state, read every value back, restored the originals,
+and read the restored values on firmware `0x018A`. Output restoration also
+verified the exact original Q8.8 value for all six physical channels. Raw
+class/vendor, firmware, and DFU symbols remain unresolved.
 
 ## Export inventory
 
@@ -68,7 +71,7 @@ project's scope.
 | 1 | `DllRegisterServer` | inventory; installer only |
 | 2 | `DllUnregisterServer` | inventory; installer only |
 | 3 | `TUSBAUDIO_AudioControlRequestGet` | exact |
-| 4 | `TUSBAUDIO_AudioControlRequestSet` | exact; live Input 1/2 gain, 48V, 80 Hz high-pass, and phase-invert write/read-back/restore on firmware `0x018A` |
+| 4 | `TUSBAUDIO_AudioControlRequestSet` | exact; live Input 1/2 gain, 48V, 80 Hz high-pass, phase-invert, three paired output gains, and hardware output-mute write/read-back/restore on firmware `0x018A` |
 | 5 | `TUSBAUDIO_CheckApiVersion` | exact |
 | 6 | `TUSBAUDIO_ClassVendorRequestIn` | inventory; no Stream 4x5 caller found |
 | 7 | `TUSBAUDIO_ClassVendorRequestOut` | inventory; do not expose raw writes |
@@ -101,7 +104,7 @@ project's scope.
 | 34 | `TUSBAUDIO_GetMute` | inventory |
 | 35 | `TUSBAUDIO_GetStreamFormatSelectionMode` | inventory |
 | 36 | `TUSBAUDIO_GetSupportedClockSources` | inventory |
-| 37 | `TUSBAUDIO_GetSupportedSampleRates` | inventory |
+| 37 | `TUSBAUDIO_GetSupportedSampleRates` | exact; read-only returned only 48000 Hz on firmware `0x018A` |
 | 38 | `TUSBAUDIO_GetSupportedStreamFormats` | inventory |
 | 39 | `TUSBAUDIO_GetUsbConfigDescriptor` | exact, read-only validated |
 | 40 | `TUSBAUDIO_GetUsbStringDescriptorString` | inventory; may expose identifiers |
@@ -121,10 +124,10 @@ project's scope.
 | 54 | `TUSBAUDIO_SetCurrentClockSource` | inventory; no live write |
 | 55 | `TUSBAUDIO_SetCurrentStreamFormat` | inventory; no live write |
 | 56 | `TUSBAUDIO_SetDeviceStreamingMode` | exact; original app uses it, no probe write |
-| 57 | `TUSBAUDIO_SetDspProperty` | exact; no live write |
+| 57 | `TUSBAUDIO_SetDspProperty` | exact; test-only property-400 mute/write/read-back/exact-restore validated, public write remains disabled |
 | 58 | `TUSBAUDIO_SetMute` | inventory; no live write |
 | 59 | `TUSBAUDIO_SetPreferredASIODevice` | inventory; changes system driver state |
-| 60 | `TUSBAUDIO_SetSampleRate` | exact; no live write |
+| 60 | `TUSBAUDIO_SetSampleRate` | exact; gated no-op 48000 Hz write/read-back passed, 44100 Hz rejected, no live rate change validated |
 | 61 | `TUSBAUDIO_SetVolume` | inventory; no live write |
 | 62 | `TUSBAUDIO_StartDfuDownload` | prohibited |
 | 63 | `TUSBAUDIO_StartDfuRevertToFactoryImage` | prohibited |
@@ -151,6 +154,9 @@ uint32_t GetDeviceInstanceIdString(uint32_t handle,
                                    uint16_t *utf16_buffer,
                                    uint32_t max_chars);
 uint32_t GetCurrentSampleRate(uint32_t handle, uint32_t *sample_rate);
+uint32_t GetSupportedSampleRates(uint32_t handle, uint32_t capacity,
+                                 uint32_t *sample_rates,
+                                 uint32_t *returned_count);
 uint32_t SetSampleRate(uint32_t handle, uint32_t sample_rate);
 uint32_t GetCurrentClockSource(uint32_t handle, void *clock_source_340);
 uint32_t GetASIOInstanceInfo(uint32_t asio_instance, void *info_196);
@@ -213,6 +219,8 @@ confirmed through `StatusCodeStringA` include:
 | `0xEE000071` | `TSTATUS_DEVICE_REMOVED` | disconnected |
 | `0xEE000074` | `TSTATUS_BUFFER_TOO_SMALL` | backend bug/protocol mismatch |
 | `0xEE000100` | `TSTATUS_INTERFACE_USED` | busy |
+| `0xEE001002` | `TSTATUS_ASIO_IN_USE` | busy |
+| `0xEE001004` | `TSTATUS_INVALID_SAMPLE_RATE` | invalid sample-rate value/state |
 
 Mapping must also consider the operation; do not collapse every non-zero code
 to `Disconnected`.
@@ -255,8 +263,16 @@ pair states in `out2Mute`, `out3Mute`, and `out4Mute`; `UpdateAttenuationHW`
 passes exact zero for both channels of a muted pair. A live read of property
 400 for `DEVICE` indices `0..5` returned
 `[0, 0, 16720723, 16720723, 0, 0]` in Q8.24 while the official UI showed mute
-on/off/on for output pairs 1/2, 3/4, and 5/6 respectively. This approves the
-narrow read mapping only; no DSP-property write was performed.
+on/off/on for output pairs 1/2, 3/4, and 5/6 respectively. A later test-only
+property-400 SET probe selected one currently non-muted pair, wrote exact zero
+to both channels, read both back, restored both original Q8.24 values, and
+verified the restoration. The public backend does not use this DSP mute path:
+recovered control-center logic derives its unmute value from routing selection,
+two master attenuation/mute states, solo state, and the optional output pad,
+none of which can be reconstructed from a pair that was already zero when this
+application started. Public `OutputMute` instead uses the independently tested
+paired device flags at settings offsets `12..17`; this avoids modifying or
+guessing host-filter attenuation.
 The meter cursor advances by the PCM sample count passed to the filter, not by
 USB packets. Peak is accumulated from absolute signed 32-bit PCM magnitudes;
 RMS uses an approximately 40 ms square/square-root window. Unread meter records

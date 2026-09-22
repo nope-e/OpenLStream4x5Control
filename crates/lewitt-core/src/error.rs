@@ -15,8 +15,6 @@ pub enum BackendError {
     Disconnected,
     #[error("protocol mismatch: {details}")]
     ProtocolMismatch { details: String },
-    #[error("firmware is not approved for writes: {version:?}")]
-    UnsupportedFirmware { version: Option<String> },
     #[error("invalid value for {control:?}: {reason}")]
     InvalidValue { control: ControlId, reason: String },
     #[error("unsupported operation: {feature}")]

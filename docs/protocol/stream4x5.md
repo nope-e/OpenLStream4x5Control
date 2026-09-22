@@ -24,7 +24,7 @@ golden capture.
 
 ## Evidence snapshot
 
-- Analysis date: 2026-09-21.
+- Analysis date: 2026-09-22.
 - Vendor API version returned by `TUSBAUDIO_GetApiVersion`: `5.2`
   (`0x00050002`).
 - Installed API/driver file version: `4.67.0.0`.
@@ -35,14 +35,17 @@ golden capture.
 - Input 1 and Input 2 preamp gain were each changed temporarily by 1 dB, and
   both 48V phantom-power, 80 Hz high-pass, and phase-invert states were
   temporarily inverted through the Windows vendor API after input safety was
-  confirmed. Every value was read back, restored, and read back again. No
-  other control, sample-rate, mixer, DSP, firmware, or DFU write was performed.
+  confirmed. All three physical output pairs were also changed temporarily by
+  1 dB. Every value was read back and restored; all six original per-channel
+  output values were restored exactly. One currently non-muted Windows DSP
+  output pair was also muted, read back, and restored exactly through property
+  400. No sample-rate, mixer-matrix, firmware, or DFU write was performed.
 - Serial number and Windows device-instance ID were intentionally discarded.
 
 Firmware `0x018A` is approved only for the Windows vendor-API Input 1/2 preamp
-gain, 48V phantom-power, 80 Hz high-pass, and phase-invert operations validated
-below. It remains read-only for every other property. Other firmware versions
-remain fully read-only.
+gain, 48V phantom-power, 80 Hz high-pass, phase-invert, and three paired
+physical output-gain operations validated below. It remains read-only for
+every other property. Other firmware versions remain fully read-only.
 
 ## USB configuration
 
@@ -103,7 +106,7 @@ All three operations use `bRequest = 0x03`, selector `0`, interface `0`:
 
 | Operation | Direction | `wValue` | `wIndex` | Length | Evidence |
 |---|---|---:|---:|---:|---|
-| Settings | GET / SET | `0x0000` | `0x3300` | 40 | S+R for GET; S+W for Input 1/2 gain, 48V, 80 Hz high-pass, and phase-invert SET |
+| Settings | GET / SET | `0x0000` | `0x3300` | 40 | S+R for GET; S+W for Input 1/2 gain, 48V, 80 Hz high-pass, phase-invert, paired output gain, and hardware output-mute SET |
 | Status | GET | `0x0001` | `0x3300` | 20 | S+R |
 | Persistent configuration | GET / SET | `0x0002` | `0x3300` | 64 | S+R for GET; S only for SET |
 
@@ -119,7 +122,7 @@ All multi-byte values are little-endian.
 | 6 | 2 | Output 4 gain | Signed Q8.8 dB |
 | 8 | 2 | Output 5 gain | Signed Q8.8 dB |
 | 10 | 2 | Output 6 gain | Signed Q8.8 dB |
-| 12 | 6 | Unmapped output state flags 1..6 | Recovered serializer emits `0` or `1`, but a live comparison disproved their mapping to the visible output-mute buttons. Do not expose them. |
+| 12 | 6 | Hardware output-mute / gain-endpoint flags 1..6 | Paired Boolean flags. Independently setting a pair to `1` physically muted that output without changing its Q8.8 gain. The recovered serializer also sets them at exactly `-60 dB` (`0xC400`) and clears them above that endpoint. They are not the control center's visible DSP output-mute buttons. |
 | 18 | 2 | Input 1 gain | Signed Q8.8 dB |
 | 20 | 2 | Input 2 gain | Signed Q8.8 dB |
 | 22 | 2 | Input 3 stored level field | Signed Q8.8-like value; not exposed as hardware gain by the official UI. |
@@ -148,6 +151,17 @@ restored values. The sanitized encoding and validation record is
 This is Windows API evidence, not USB packet evidence; it does not approve a
 Linux write implementation.
 
+The three physical output gains are writable in 1 dB steps from `-60` through
+`0 dB` on firmware `0x018A`. Output 1/2 uses offsets `0..3`, Output 3/4 uses
+`4..7`, and Output 5/6 uses `8..11`; the same signed Q8.8 value is written to
+both channels of the selected pair. The full-block read-modify-write leaves
+the selected pair's hardware-mute flags synchronized with the vendor
+serializer: `-60 dB` sets both flags and every higher gain clears them. A live
+test changed each pair by 1 dB, verified the paired read-back, then restored
+and verified the exact original Q8.8 value of every individual output channel.
+The sanitized record is
+[`vendor-api-output-gain-write-v1.json`](../../fixtures/stream4x5/vendor-api-output-gain-write-v1.json).
+
 The same read-modify-write path now exposes Input 1/2 80 Hz high-pass on
 firmware `0x018A`. It changes only byte `30` for Input 1 or byte `31` for Input
 2 (`0` flat, `1` enabled). A live test inverted both values, verified both
@@ -169,12 +183,14 @@ verified the restored values. The capability is writable only on the approved
 firmware profile. The sanitized record is
 [`vendor-api-phantom-write-v1.json`](../../fixtures/stream4x5/vendor-api-phantom-write-v1.json).
 
-The official UI exposes output mute as an independent button, but those buttons
-are **not** bytes `12..17` in this device block. In a simultaneous read-only
+The official UI exposes a DSP output-mute button, but those buttons are **not**
+bytes `12..17` in this device block. In a simultaneous read-only
 observation, the official UI showed output pairs 1/2 and 5/6 muted and 3/4
-unmuted while all six bytes at `12..17` were zero. Neither direct nor inverted
-boolean decoding can represent that state, so the public backend leaves these
-six bytes unmapped.
+unmuted while all six bytes at `12..17` were zero. Later static analysis of
+`Stream4x5.SaveSettingsToDevice` resolved the six bytes: each paired flag is a
+derived `-60 dB` hardware-gain endpoint marker. Later live testing established
+that the same flags also independently gate the physical hardware output. They
+still do not represent the control center's DSP mute state.
 
 Static IL analysis identifies the visible physical-output button path as
 `Click_buttonMute -> Mixer8x6.UpdateAttenuation -> UpdateAttenuationHW ->
@@ -183,24 +199,46 @@ SetOutAttenuationSafe`. The three physical pairs use preset fields `out2Mute`,
 both channels through DSP property 400. A live `TUSBAUDIO_GetDspProperty` read
 for channel type `DEVICE` (`1`), indices `0..5`, returned Q8.24 values
 `[0, 0, 16720723, 16720723, 0, 0]`, matching the visible on/off/on state. The
-Windows backend therefore reads `OutputMute` from this DSP property and keeps
-the independent device output-gain values unchanged.
+DSP property 400 therefore remains useful evidence for the control center's
+host-filter state, but it is not the public hardware-mute implementation.
 
-This mute is Windows host-filter state for a physical output path, not a
-device-resident USB mute. It cannot be implemented on Linux by copying the
-property block to EP0. The Linux backend must omit `OutputMute` from its
-capabilities, and the shared GUI hides the control instead of synthesizing an
-off state. A future PipeWire implementation would be a separate optional
-host-audio provider, not part of `lewitt-backend-linux`. No output-mute write
-is enabled yet.
+A test-only binding of `TUSBAUDIO_SetDspProperty` has now validated the 14-byte
+property-400 SET ABI. The test selected one currently non-muted pair, saved
+both exact Q8.24 values, wrote zero to both channels, verified both read-backs,
+then restored and verified both original values. The sanitized record is
+[`vendor-api-output-mute-write-v1.json`](../../fixtures/stream4x5/vendor-api-output-mute-write-v1.json).
+This proves reversible DSP mute only when a non-zero baseline has already been
+captured; it does not approve using property 400 as a public write capability.
 
-The six device-block flags still require a separate hardware-mute experiment.
-With Windows DSP mute disabled, use the official output fader to move exactly
-one pair to `-60 dB`, compare bytes `12..17` and a USBPcap trace before/after,
-then close the control center and verify whether the physical output remains
-muted across a reconnect. Restore the original gain after the test. Until that
-sequence is captured, the application must neither write nor expose these
-flags, and must not describe them as hardware mute.
+Recovered `UpdateAttenuationHW` logic shows why a constant unmute value is not
+safe. A pair's non-muted attenuation depends on its current `OutSelectionHW`
+routing, monitor/output master attenuation and mute state, solo mode, and its
+optional `-20 dB` pad. An application that starts while the pair is already
+muted cannot recover those inputs from property 400 alone. The production
+backend therefore does not use property 400 for public output mute and never
+guesses unity or silently changes the effective level.
+
+Property 400 is Windows host-filter state for a physical output path, not a
+device-resident USB mute. It cannot be implemented on Linux by copying that
+property block to EP0. The independently validated flags at bytes `12..17` are
+device-side hardware mute, but there is still no captured Linux USB SET packet
+or `rusb` hardware validation. The Linux backend must therefore continue to
+omit `OutputMute` from its capabilities, and the shared GUI hides the control
+instead of synthesizing an off state.
+
+The six device-block flags passed a separate hardware-effect experiment. A
+gated, ignored test chooses one physical output pair whose
+gain is above `-60 dB`, whose two flags are zero, and whose Windows DSP
+attenuation is non-zero. It changes only that pair's two flags for five
+seconds, reads the block back, then restores and verifies the exact original
+40 bytes. With the control center closed, the test selected Output 1/2, read
+both temporary flags back as `1`, returned `OutputMute=true` through the public
+snapshot decoder, and restored an exact byte-for-byte match. The user
+confirmed that Output 1/2 was physically silent during the five-second window.
+The Windows firmware `0x018A` profile consequently exposes all three paired
+flags as writable hardware output mute; each write changes only its two Boolean
+bytes and is followed by controller read-back. The sanitized record is
+[`vendor-api-output-state-probe-v1.json`](../../fixtures/stream4x5/vendor-api-output-state-probe-v1.json).
 
 Input-side state has different semantics because the official UI exposes no
 independent device/preamp mute buttons; the visible input-strip mute buttons
@@ -211,12 +249,11 @@ fader values into the input state bytes:
 - recovered internal Input 3/4 handling maps raw zero to its state flags, but
   there is no corresponding official hardware-gain control.
 
-The public backend exposes Windows DSP output mute state as read-only, Input
-1/2 preamp gain, 48V phantom power, 80 Hz high-pass, and phase inversion as
-writable on the approved profile, and their derived endpoint state as
-read-only. It does not expose Input 3/4 level/state fields or the six unmapped
-output flags. All device SET traffic except these validated Input 1/2
-operations remains static-only evidence: do not enable another write without
+The public backend exposes Windows hardware output mute, Input 1/2 preamp gain,
+48V phantom power, 80 Hz high-pass, phase inversion, and all three paired
+output gains as writable on the approved profile. It does not expose the
+control center's host DSP mute or Input 3/4 level/state fields. All other device
+SET traffic remains static-only evidence: do not enable another write without
 a one-property capture and read-back test. The UI-derived Input 1/2 range is
 `-7..48 dB`, and the output slider range is `-60..0 dB`; rejected values and
 firmware-specific ranges outside the validated profile are untested.
@@ -271,10 +308,17 @@ Read-only calls against clock source `0x29` succeeded:
 | Clock selector | `A1 01`, `wValue=0x0100`, `wIndex=0x2800`, length 1 | `01` | R |
 
 The range response only described the active 48 kHz state, while the control
-center advertises 44.1, 48, and 96 kHz from a static list. It is not proof that
-a direct `SET_CUR` is safe. The Windows `Get/SetSampleRate` exports use driver
-IOCTLs `0x80882104`/`0x80882108`; no sample-rate write or raw bus capture was
-performed. Linux should leave sample-rate negotiation to ALSA/PipeWire until a
+center advertises 44.1, 48, and 96 kHz from a static list. The Windows
+`GetSupportedSampleRates` call independently returned only `[48000]` on the
+observed device. `Get/SetSampleRate` use driver IOCTLs
+`0x80882104`/`0x80882108`. A gated attempt while an ASIO client was active was
+rejected with `TSTATUS_ASIO_IN_USE`; after clients were stopped, 44.1 kHz was
+rejected with `TSTATUS_INVALID_SAMPLE_RATE`. A no-op set of the reported current
+48 kHz value succeeded and read back as 48 kHz, confirming the setter ABI but
+not a real rate change. The device remained at 48 kHz after every attempt.
+Public sample-rate writes therefore remain disabled. The sanitized record is
+[`vendor-api-sample-rate-write-v1.json`](../../fixtures/stream4x5/vendor-api-sample-rate-write-v1.json).
+Linux should leave sample-rate negotiation to ALSA/PipeWire until a
 coexistence-safe write sequence is captured.
 
 ## What is not a USB device protocol

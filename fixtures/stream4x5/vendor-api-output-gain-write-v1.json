@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "source": "sanitized Windows vendor-API output-gain encoding plus live write/read-back/exact-restore validation",
+  "sanitization": {
+    "contains_serial_number": false,
+    "contains_device_instance_id": false,
+    "contains_firmware_image": false,
+    "contains_raw_usb_capture": false
+  },
+  "environment": {
+    "validation_date": "2026-09-22",
+    "vendor_api": "5.2",
+    "vendor_api_file_version": "4.67.0.0",
+    "device_firmware_raw": "0x018A"
+  },
+  "logical_call": {
+    "export": "TUSBAUDIO_AudioControlRequestSet",
+    "entity_id": "0x33",
+    "request": "0x03",
+    "control_selector": "0x00",
+    "channel_or_mixer_control": "0x00",
+    "length": 40,
+    "timeout_ms": 500
+  },
+  "golden_encoding": {
+    "control": "output_3_4_gain_db",
+    "value": -17,
+    "before_block_hex": "00f400f400ee00ee00ee00ee000000000000002c00fa000000000000010101010000000000000100",
+    "changed_offsets": [4, 5, 6, 7],
+    "expected_written_block_hex": "00f400f400ef00ef00ee00ee000000000000002c00fa000000000000010101010000000000000100",
+    "encoding": "signed little-endian Q8.8; the same value is duplicated across both channels of the selected physical output pair"
+  },
+  "live_validation": {
+    "controls": ["output_1_2_gain_db", "output_3_4_gain_db", "output_5_6_gain_db"],
+    "procedure": "read exact original stereo values; write a temporary 1 dB paired delta; read back; restore both original channel values; read back the raw settings block",
+    "result": "all three temporary pair values matched; all six original per-channel Q8.8 values were restored exactly",
+    "test": "tests::live_output_gains_round_trip_restore_original_values"
+  },
+  "limitations": [
+    "Only firmware 0x018A and the three paired physical output-gain controls are approved by this fixture.",
+    "The underlying USB setup packet has not been captured with USBPcap.",
+    "Offsets 12..17 are paired hardware-mute flags also used by the original serializer at the -60 dB endpoint; the public gain encoder now sets the selected pair at -60 dB and clears it above -60 dB."
+  ]
+}

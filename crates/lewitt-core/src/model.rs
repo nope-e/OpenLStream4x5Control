@@ -83,14 +83,6 @@ pub enum ControlId {
     OutputVolume {
         bus: BusId,
     },
-    /// Independent mute state for a physical output path.
-    ///
-    /// The Windows control center implements this in the host DSP filter; it
-    /// is not the six-byte state area in the device's private settings block.
-    /// Backends without an equivalent provider must omit this capability.
-    OutputMute {
-        bus: BusId,
-    },
     MonitorVolume,
     MixerWeight {
         source: ChannelId,
@@ -130,121 +122,107 @@ pub struct ControlCommand {
     pub value: ControlValue,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ControlKind {
-    Continuous,
-    Discrete,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ValueKind {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ControlType {
     Boolean,
-    Scalar,
-    Decibels,
+    Scalar {
+        minimum: f32,
+        maximum: f32,
+        step: f32,
+    },
+    Decibels {
+        minimum: f32,
+        maximum: f32,
+        step: f32,
+    },
     Integer,
-    Choice,
-}
-
-impl ValueKind {
-    #[must_use]
-    pub fn matches(self, value: &ControlValue) -> bool {
-        matches!(
-            (self, value),
-            (Self::Boolean, ControlValue::Boolean(_))
-                | (Self::Scalar, ControlValue::Scalar(_))
-                | (Self::Decibels, ControlValue::Decibels(_))
-                | (Self::Integer, ControlValue::Integer(_))
-                | (Self::Choice, ControlValue::Choice(_))
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct NumericRange {
-    pub minimum: f32,
-    pub maximum: f32,
-    pub step: Option<f32>,
-}
-
-impl NumericRange {
-    #[must_use]
-    pub fn contains(self, value: f32) -> bool {
-        value.is_finite() && value >= self.minimum && value <= self.maximum
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ControlAccess {
-    ReadOnly,
-    Writable,
+    Choice {
+        choices: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ControlDescriptor {
     pub id: ControlId,
-    pub kind: ControlKind,
-    pub value_kind: ValueKind,
-    pub access: ControlAccess,
-    pub range: Option<NumericRange>,
-    #[serde(default)]
-    pub choices: Vec<String>,
+    pub value: ControlType,
+    pub writable: bool,
 }
 
 impl ControlDescriptor {
-    pub fn validate(&self, value: &ControlValue) -> Result<(), String> {
-        if !self.value_kind.matches(value) {
-            return Err(format!(
-                "expected {:?}, received {value:?}",
-                self.value_kind
-            ));
-        }
+    #[must_use]
+    pub fn is_continuous(&self) -> bool {
+        matches!(
+            &self.value,
+            ControlType::Scalar { .. } | ControlType::Decibels { .. }
+        )
+    }
 
-        if let Some(range) = self.range {
-            match value {
-                ControlValue::Scalar(value) | ControlValue::Decibels(value) => {
-                    if !range.contains(*value) {
-                        return Err(format!(
-                            "value {value} is outside [{}, {}]",
-                            range.minimum, range.maximum
-                        ));
-                    }
-                }
-                ControlValue::Integer(value) => {
-                    let value = f64::from(*value);
-                    if value < f64::from(range.minimum) || value > f64::from(range.maximum) {
-                        return Err(format!(
-                            "value {value} is outside [{}, {}]",
-                            range.minimum, range.maximum
-                        ));
-                    }
-                }
-                ControlValue::Boolean(_) | ControlValue::Choice(_) => {}
+    #[must_use]
+    pub fn numeric_range(&self) -> Option<(f32, f32)> {
+        match &self.value {
+            ControlType::Scalar {
+                minimum, maximum, ..
             }
+            | ControlType::Decibels {
+                minimum, maximum, ..
+            } => Some((*minimum, *maximum)),
+            ControlType::Boolean | ControlType::Integer | ControlType::Choice { .. } => None,
         }
-        if let ControlValue::Choice(choice) = value
-            && !self.choices.iter().any(|candidate| candidate == choice)
-        {
-            return Err(format!("unknown choice {choice:?}"));
+    }
+
+    #[must_use]
+    pub fn step(&self) -> Option<f32> {
+        match &self.value {
+            ControlType::Scalar { step, .. } | ControlType::Decibels { step, .. } => Some(*step),
+            ControlType::Boolean | ControlType::Integer | ControlType::Choice { .. } => None,
         }
-        Ok(())
+    }
+
+    pub fn validate(&self, value: &ControlValue) -> Result<(), String> {
+        match (&self.value, value) {
+            (ControlType::Boolean, ControlValue::Boolean(_))
+            | (ControlType::Integer, ControlValue::Integer(_)) => Ok(()),
+            (
+                ControlType::Scalar {
+                    minimum,
+                    maximum,
+                    step,
+                },
+                ControlValue::Scalar(value),
+            )
+            | (
+                ControlType::Decibels {
+                    minimum,
+                    maximum,
+                    step,
+                },
+                ControlValue::Decibels(value),
+            ) => validate_numeric(*value, *minimum, *maximum, *step),
+            (ControlType::Choice { choices }, ControlValue::Choice(choice)) => choices
+                .iter()
+                .any(|candidate| candidate == choice)
+                .then_some(())
+                .ok_or_else(|| format!("unknown choice {choice:?}")),
+            (expected, received) => Err(format!("expected {expected:?}, received {received:?}")),
+        }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum FirmwareStatus {
-    Verified { profile: String },
-    UnknownReadOnly { version: Option<String> },
-    Unsupported { version: Option<String> },
+fn validate_numeric(value: f32, minimum: f32, maximum: f32, step: f32) -> Result<(), String> {
+    if !value.is_finite() || value < minimum || value > maximum {
+        return Err(format!("value {value} is outside [{minimum}, {maximum}]"));
+    }
+    let steps = (value - minimum) / step;
+    if (steps - steps.round()).abs() > 1.0e-4 {
+        return Err(format!("value {value} is not aligned to step {step}"));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeviceCapabilities {
     pub model: String,
-    pub firmware: FirmwareStatus,
     pub controls: Vec<ControlDescriptor>,
     pub meter_sources: Vec<MeterId>,
 }
@@ -255,11 +233,6 @@ impl DeviceCapabilities {
         self.controls
             .iter()
             .find(|candidate| &candidate.id == control)
-    }
-
-    #[must_use]
-    pub fn writes_enabled(&self) -> bool {
-        matches!(self.firmware, FirmwareStatus::Verified { .. })
     }
 }
 
@@ -304,14 +277,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn numeric_range_rejects_non_finite_values() {
-        let range = NumericRange {
-            minimum: -60.0,
-            maximum: 12.0,
-            step: None,
+    fn numeric_control_rejects_non_finite_and_misaligned_values() {
+        let descriptor = ControlDescriptor {
+            id: ControlId::MonitorVolume,
+            value: ControlType::Decibels {
+                minimum: -60.0,
+                maximum: 12.0,
+                step: 0.5,
+            },
+            writable: true,
         };
-        assert!(!range.contains(f32::NAN));
-        assert!(!range.contains(f32::INFINITY));
+        assert!(
+            descriptor
+                .validate(&ControlValue::Decibels(f32::NAN))
+                .is_err()
+        );
+        assert!(
+            descriptor
+                .validate(&ControlValue::Decibels(-11.75))
+                .is_err()
+        );
+        assert_eq!(descriptor.validate(&ControlValue::Decibels(-11.5)), Ok(()));
     }
 
     #[test]

@@ -1,8 +1,7 @@
 use crate::{
-    BackendError, BackendResult, BusId, ChannelId, ControlAccess, ControlCommand,
-    ControlDescriptor, ControlId, ControlKind, ControlValue, DeviceBackend, DeviceCapabilities,
-    DeviceEvent, DeviceId, DeviceInfo, DeviceSnapshot, FirmwareStatus, MeterFrame, NumericRange,
-    STREAM_4X5_PRODUCT_ID, STREAM_4X5_VENDOR_ID, ValueKind,
+    BackendError, BackendResult, BusId, ChannelId, ControlCommand, ControlDescriptor, ControlId,
+    ControlType, ControlValue, DeviceBackend, DeviceCapabilities, DeviceEvent, DeviceId,
+    DeviceInfo, DeviceSnapshot, MeterFrame, STREAM_4X5_PRODUCT_ID, STREAM_4X5_VENDOR_ID,
 };
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -68,8 +67,17 @@ impl MockHandle {
         Ok(())
     }
 
-    pub fn set_firmware_status(&self, firmware: FirmwareStatus) -> BackendResult<()> {
-        self.lock()?.capabilities.firmware = firmware;
+    pub fn set_writable(&self, control: &ControlId, writable: bool) -> BackendResult<()> {
+        let mut state = self.lock()?;
+        let descriptor = state
+            .capabilities
+            .controls
+            .iter_mut()
+            .find(|descriptor| &descriptor.id == control)
+            .ok_or_else(|| BackendError::Unsupported {
+                feature: format!("mock capability {control:?}"),
+            })?;
+        descriptor.writable = writable;
         Ok(())
     }
 
@@ -114,29 +122,20 @@ impl MockBackend {
         let ducker = ControlId::DuckerEnabled;
         let capabilities = DeviceCapabilities {
             model: "Stream 4x5 (mock)".into(),
-            firmware: FirmwareStatus::Verified {
-                profile: "mock-fixture-v1".into(),
-            },
             controls: vec![
                 ControlDescriptor {
                     id: monitor.clone(),
-                    kind: ControlKind::Continuous,
-                    value_kind: ValueKind::Decibels,
-                    access: ControlAccess::Writable,
-                    range: Some(NumericRange {
+                    value: ControlType::Decibels {
                         minimum: -60.0,
                         maximum: 12.0,
-                        step: Some(0.5),
-                    }),
-                    choices: Vec::new(),
+                        step: 0.5,
+                    },
+                    writable: true,
                 },
                 ControlDescriptor {
                     id: ducker.clone(),
-                    kind: ControlKind::Discrete,
-                    value_kind: ValueKind::Boolean,
-                    access: ControlAccess::Writable,
-                    range: None,
-                    choices: Vec::new(),
+                    value: ControlType::Boolean,
+                    writable: true,
                 },
             ],
             meter_sources: vec![
@@ -257,21 +256,13 @@ impl DeviceBackend for MockBackend {
         let mut state = self.lock()?;
         Self::fail_if_requested(&mut state, MockOperation::SetControl)?;
         Self::ensure_open(&state)?;
-        if !state.capabilities.writes_enabled() {
-            let version = match &state.capabilities.firmware {
-                FirmwareStatus::Verified { .. } => None,
-                FirmwareStatus::UnknownReadOnly { version }
-                | FirmwareStatus::Unsupported { version } => version.clone(),
-            };
-            return Err(BackendError::UnsupportedFirmware { version });
-        }
         let descriptor = state
             .capabilities
             .descriptor(&command.control)
             .ok_or_else(|| BackendError::Unsupported {
                 feature: format!("control {:?}", command.control),
             })?;
-        if descriptor.access != ControlAccess::Writable {
+        if !descriptor.writable {
             return Err(BackendError::Unsupported {
                 feature: format!("write to read-only control {:?}", command.control),
             });
@@ -328,12 +319,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unknown_firmware_is_read_only() {
+    fn read_only_control_rejects_writes() {
         let (mut backend, handle) = MockBackend::stream_4x5();
         handle
-            .set_firmware_status(FirmwareStatus::UnknownReadOnly {
-                version: Some("future".into()),
-            })
+            .set_writable(&ControlId::DuckerEnabled, false)
             .expect("mock state should be available");
         backend
             .open(&DeviceId::new("mock-stream-4x5"))
@@ -345,11 +334,6 @@ mod tests {
                 value: ControlValue::Boolean(true),
             })
             .expect_err("unknown firmware must reject writes");
-        assert_eq!(
-            error,
-            BackendError::UnsupportedFirmware {
-                version: Some("future".into())
-            }
-        );
+        assert!(matches!(error, BackendError::Unsupported { .. }));
     }
 }

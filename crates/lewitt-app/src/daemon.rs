@@ -5,9 +5,9 @@ use iced::{
     window,
 };
 use lewitt_core::{
-    BackendError, BusId, ChannelId, ControlAccess, ControlCommand, ControlId, ControlValue,
-    Controller, ControllerConfig, ControllerEvent, DeviceCapabilities, DeviceEvent, DeviceInfo,
-    DeviceSnapshot, WorkerOperation,
+    BackendError, BusId, ChannelId, ControlCommand, ControlId, ControlValue, Controller,
+    ControllerConfig, ControllerEvent, DeviceCapabilities, DeviceEvent, DeviceInfo, DeviceSnapshot,
+    WorkerOperation,
 };
 use std::time::{Duration, Instant};
 
@@ -420,19 +420,23 @@ impl State {
         }
     }
 
-    fn supports_control(&self, control: &ControlId) -> bool {
+    fn can_write(&self, control: &ControlId) -> bool {
         self.capabilities
             .as_ref()
             .and_then(|capabilities| capabilities.descriptor(control))
-            .is_some()
+            .is_some_and(|descriptor| descriptor.writable)
     }
 
-    fn can_write(&self, control: &ControlId) -> bool {
-        self.capabilities.as_ref().is_some_and(|capabilities| {
-            capabilities.writes_enabled()
-                && capabilities
-                    .descriptor(control)
-                    .is_some_and(|descriptor| descriptor.access == ControlAccess::Writable)
+    fn control_scale(&self, control: &ControlId) -> Option<ControlScale> {
+        let descriptor = self
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.descriptor(control))?;
+        let (minimum, maximum) = descriptor.numeric_range()?;
+        Some(ControlScale {
+            minimum,
+            maximum,
+            step: descriptor.step()?,
         })
     }
 
@@ -461,6 +465,13 @@ impl State {
     fn set_input_gain(&mut self, channel: ChannelId, gain_db: f32) {
         self.queue_control_write(
             ControlId::InputVolume { channel },
+            ControlValue::Decibels(gain_db),
+        );
+    }
+
+    fn set_output_gain(&mut self, bus: BusId, gain_db: f32) {
+        self.queue_control_write(
+            ControlId::OutputVolume { bus },
             ControlValue::Decibels(gain_db),
         );
     }
@@ -508,6 +519,7 @@ enum Message {
     SetLanguage(Language),
     Refresh,
     SetInputGain(ChannelId, f32),
+    SetOutputGain(BusId, f32),
     SetHighPass(ChannelId, bool),
     SetPhaseInvert(ChannelId, bool),
     SetPhantomPower(ChannelId, bool),
@@ -546,6 +558,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::SetInputGain(channel, gain_db) => {
             state.set_input_gain(channel, gain_db);
+            Task::none()
+        }
+        Message::SetOutputGain(bus, gain_db) => {
+            state.set_output_gain(bus, gain_db);
             Task::none()
         }
         Message::SetHighPass(channel, enabled) => {
@@ -776,7 +792,8 @@ fn input_card<'a>(
     channel: ChannelId,
     title_key: &'static str,
 ) -> Element<'a, Message> {
-    let gain = state.decibels(&ControlId::InputVolume { channel });
+    let gain_id = ControlId::InputVolume { channel };
+    let gain = state.decibels(&gain_id);
     let mute = state.boolean(&ControlId::InputMute { channel });
     let phantom_id = ControlId::PhantomPower { channel };
     let phantom = state.boolean(&phantom_id);
@@ -802,13 +819,13 @@ fn input_card<'a>(
     channel_card(
         state,
         state.text(title_key),
+        &gain_id,
         gain,
         mute,
-        -7.0..=48.0,
         Some(toggles.into()),
         state
-            .can_write(&ControlId::InputVolume { channel })
-            .then_some(channel),
+            .can_write(&gain_id)
+            .then_some(GainTarget::Input(channel)),
     )
 }
 
@@ -838,37 +855,40 @@ fn fixed_input_card<'a>(state: &'a State, title_key: &'static str) -> Element<'a
 }
 
 fn output_card<'a>(state: &'a State, bus: BusId, title_key: &'static str) -> Element<'a, Message> {
-    let gain = state.decibels(&ControlId::OutputVolume { bus });
-    let mute_id = ControlId::OutputMute { bus };
-    let mute_status: Option<Element<'a, Message>> = state.supports_control(&mute_id).then(|| {
-        row![state_pill(
-            state,
-            "control.output_mute",
-            state.boolean(&mute_id),
-            None
-        )]
-        .spacing(6)
-        .into()
-    });
+    let gain_id = ControlId::OutputVolume { bus };
+    let gain = state.decibels(&gain_id);
     channel_card(
         state,
         state.text(title_key),
+        &gain_id,
         gain,
         None,
-        -60.0..=0.0,
-        mute_status,
         None,
+        state.can_write(&gain_id).then_some(GainTarget::Output(bus)),
     )
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GainTarget {
+    Input(ChannelId),
+    Output(BusId),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ControlScale {
+    minimum: f32,
+    maximum: f32,
+    step: f32,
 }
 
 fn channel_card<'a>(
     state: &'a State,
     title: &'a str,
+    gain_id: &ControlId,
     gain: Option<f32>,
     endpoint_muted: Option<bool>,
-    range: std::ops::RangeInclusive<f32>,
     toggles: Option<Element<'a, Message>>,
-    editable_input: Option<ChannelId>,
+    editable_gain: Option<GainTarget>,
 ) -> Element<'a, Message> {
     let value = if endpoint_muted == Some(true) {
         state.text("state.muted").to_owned()
@@ -878,22 +898,28 @@ fn channel_card<'a>(
             |gain| format!("{gain:.1} dB"),
         )
     };
-    let bar_value = if endpoint_muted == Some(true) {
-        *range.start()
-    } else {
-        gain.unwrap_or(*range.start())
-    };
-    let gain_control: Element<'a, Message> = if let Some(channel) = editable_input {
-        slider(range.clone(), bar_value, move |value| {
-            Message::SetInputGain(channel, value)
-        })
-        .step(1.0_f32)
-        .into()
-    } else {
-        progress_bar(range, bar_value)
-            .girth(7)
-            .style(|_| gain_bar_style())
+    let gain_control: Element<'a, Message> = if let Some(scale) = state.control_scale(gain_id) {
+        let range = scale.minimum..=scale.maximum;
+        let bar_value = if endpoint_muted == Some(true) {
+            scale.minimum
+        } else {
+            gain.unwrap_or(scale.minimum)
+        };
+        if let Some(target) = editable_gain {
+            slider(range, bar_value, move |value| match target {
+                GainTarget::Input(channel) => Message::SetInputGain(channel, value),
+                GainTarget::Output(bus) => Message::SetOutputGain(bus, value),
+            })
+            .step(scale.step)
             .into()
+        } else {
+            progress_bar(range, bar_value)
+                .girth(7)
+                .style(|_| gain_bar_style())
+                .into()
+        }
+    } else {
+        space().height(7).into()
     };
     let mut content = column![
         row![
@@ -1086,9 +1112,7 @@ fn backend_notice_key(error: &BackendError) -> &'static str {
         BackendError::PermissionDenied { .. } => "notice.permission_denied",
         BackendError::Busy { .. } => "notice.device_busy",
         BackendError::Disconnected => "notice.device_disconnected",
-        BackendError::UnsupportedFirmware { .. } | BackendError::Unsupported { .. } => {
-            "notice.operation_unavailable"
-        }
+        BackendError::Unsupported { .. } => "notice.operation_unavailable",
         BackendError::InvalidValue { .. } => "notice.invalid_value",
         _ => "notice.device_read_failed",
     }
@@ -1195,34 +1219,6 @@ mod tests {
             }),
             Some(true)
         );
-    }
-
-    #[test]
-    fn optional_output_mute_is_gated_by_backend_capabilities() {
-        let mut state = State::without_controller(false, None);
-        let mute = ControlId::OutputMute {
-            bus: BusId::Output1_2,
-        };
-        state
-            .snapshot
-            .controls
-            .insert(mute.clone(), ControlValue::Boolean(false));
-        assert!(!state.supports_control(&mute));
-
-        state.capabilities = Some(DeviceCapabilities {
-            model: "Stream 4x5".into(),
-            firmware: lewitt_core::FirmwareStatus::UnknownReadOnly { version: None },
-            controls: vec![lewitt_core::ControlDescriptor {
-                id: mute.clone(),
-                kind: lewitt_core::ControlKind::Discrete,
-                value_kind: lewitt_core::ValueKind::Boolean,
-                access: lewitt_core::ControlAccess::ReadOnly,
-                range: None,
-                choices: Vec::new(),
-            }],
-            meter_sources: Vec::new(),
-        });
-        assert!(state.supports_control(&mute));
     }
 
     #[test]

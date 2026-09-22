@@ -3,6 +3,8 @@
 use lewitt_core::{BackendError, BackendResult};
 use libloading::Library;
 use std::ffi::c_void;
+#[cfg(test)]
+use std::ffi::{CStr, c_char};
 use std::path::Path;
 
 const REQUIRED_API_VERSION: u32 = 0x0005_0002;
@@ -16,9 +18,14 @@ type CloseDeviceFn = unsafe extern "system" fn(u32) -> u32;
 type GetDevicePropertiesFn = unsafe extern "system" fn(u32, *mut c_void) -> u32;
 type GetDeviceInstanceIdStringFn = unsafe extern "system" fn(u32, *mut u16, u32) -> u32;
 type GetCurrentSampleRateFn = unsafe extern "system" fn(u32, *mut u32) -> u32;
+#[cfg(test)]
+type SetSampleRateFn = unsafe extern "system" fn(u32, u32) -> u32;
+#[cfg(test)]
+type StatusCodeStringAFn = unsafe extern "system" fn(u32) -> *const c_char;
+#[cfg(test)]
+type GetSupportedSampleRatesFn = unsafe extern "system" fn(u32, u32, *mut u32, *mut u32) -> u32;
 type GetCurrentClockSourceFn = unsafe extern "system" fn(u32, *mut c_void) -> u32;
 type GetAsioInstanceInfoFn = unsafe extern "system" fn(u32, *mut c_void) -> u32;
-type GetDspPropertyFn = unsafe extern "system" fn(u32, *mut c_void, u32) -> u32;
 type AudioControlRequestGetFn =
     unsafe extern "system" fn(u32, u8, u8, u8, u8, *mut c_void, u32, *mut u32, u32) -> u32;
 type AudioControlRequestSetFn =
@@ -34,9 +41,14 @@ pub(super) struct VendorApi {
     get_device_properties: GetDevicePropertiesFn,
     get_device_instance_id_string: GetDeviceInstanceIdStringFn,
     get_current_sample_rate: GetCurrentSampleRateFn,
+    #[cfg(test)]
+    set_sample_rate: SetSampleRateFn,
+    #[cfg(test)]
+    status_code_string_a: StatusCodeStringAFn,
+    #[cfg(test)]
+    get_supported_sample_rates: GetSupportedSampleRatesFn,
     get_current_clock_source: GetCurrentClockSourceFn,
     get_asio_instance_info: GetAsioInstanceInfoFn,
-    get_dsp_property: GetDspPropertyFn,
     audio_control_request_get: AudioControlRequestGetFn,
     audio_control_request_set: AudioControlRequestSetFn,
     _library: Library,
@@ -71,9 +83,17 @@ impl VendorApi {
                 b"TUSBAUDIO_GetDeviceInstanceIdString\0",
             )?,
             get_current_sample_rate: load_symbol(&library, b"TUSBAUDIO_GetCurrentSampleRate\0")?,
+            #[cfg(test)]
+            set_sample_rate: load_symbol(&library, b"TUSBAUDIO_SetSampleRate\0")?,
+            #[cfg(test)]
+            status_code_string_a: load_symbol(&library, b"TUSBAUDIO_StatusCodeStringA\0")?,
+            #[cfg(test)]
+            get_supported_sample_rates: load_symbol(
+                &library,
+                b"TUSBAUDIO_GetSupportedSampleRates\0",
+            )?,
             get_current_clock_source: load_symbol(&library, b"TUSBAUDIO_GetCurrentClockSource\0")?,
             get_asio_instance_info: load_symbol(&library, b"TUSBAUDIO_GetASIOInstanceInfo\0")?,
-            get_dsp_property: load_symbol(&library, b"TUSBAUDIO_GetDspProperty\0")?,
             audio_control_request_get: load_symbol(
                 &library,
                 b"TUSBAUDIO_AudioControlRequestGet\0",
@@ -160,6 +180,61 @@ impl VendorApi {
         Ok(sample_rate)
     }
 
+    #[cfg(test)]
+    pub(super) fn set_sample_rate(&self, handle: u32, sample_rate: u32) -> BackendResult<()> {
+        validate_sample_rate(sample_rate)?;
+        // SAFETY: The recovered synchronous ABI takes the open 32-bit device
+        // handle and a u32 sample rate. A changing test first selects only a
+        // different value returned by `GetSupportedSampleRates`, then restores
+        // the original value before asserting the temporary result.
+        let status = unsafe { (self.set_sample_rate)(handle, sample_rate) };
+        check_sample_rate_status(sample_rate, status)
+    }
+
+    #[cfg(test)]
+    pub(super) fn status_code_string(&self, status: u32) -> Option<String> {
+        // SAFETY: The exact ABI returns a borrowed NUL-terminated string owned
+        // by the retained vendor library. We copy it immediately and never
+        // retain the pointer beyond this call.
+        let pointer = unsafe { (self.status_code_string_a)(status) };
+        if pointer.is_null() {
+            return None;
+        }
+        // SAFETY: `StatusCodeStringA` promises a NUL-terminated C string for
+        // the duration of the retained library. Lossy conversion also handles
+        // any non-UTF-8 bytes without panicking.
+        Some(
+            unsafe { CStr::from_ptr(pointer) }
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn supported_sample_rates(&self, handle: u32) -> BackendResult<Vec<u32>> {
+        let mut rates = [0_u32; 32];
+        let mut count = 0_u32;
+        // SAFETY: Static analysis recovered the exact four-argument ABI. The
+        // capacity matches the 32-element caller-owned output array, `count`
+        // is writable, and neither pointer is retained after the call.
+        let status = unsafe {
+            (self.get_supported_sample_rates)(handle, 32, rates.as_mut_ptr(), &raw mut count)
+        };
+        check_status("read supported sample rates", status)?;
+        let count = usize::try_from(count).map_err(|_| BackendError::ProtocolMismatch {
+            details: "supported sample-rate count does not fit usize".into(),
+        })?;
+        if count > rates.len() {
+            return Err(BackendError::ProtocolMismatch {
+                details: format!(
+                    "vendor API returned {count} sample rates for a {}-entry buffer",
+                    rates.len()
+                ),
+            });
+        }
+        Ok(rates[..count].to_vec())
+    }
+
     pub(super) fn current_clock_source(&self, handle: u32) -> BackendResult<[u8; 340]> {
         let mut bytes = [0_u8; 340];
         // SAFETY: The exact ABI requires a caller-owned 340-byte output block.
@@ -177,28 +252,6 @@ impl VendorApi {
             unsafe { (self.get_asio_instance_info)(0, bytes.as_mut_ptr().cast::<c_void>()) };
         check_status("read ASIO instance information", status)?;
         Ok(bytes)
-    }
-
-    pub(super) fn output_attenuation_raw(
-        &self,
-        handle: u32,
-        channel_type: u8,
-        channel_index: u8,
-    ) -> BackendResult<i32> {
-        let mut block = [0_u8; 14];
-        block[0..4].copy_from_slice(&77_u32.to_le_bytes());
-        block[4..8].copy_from_slice(&400_u32.to_le_bytes());
-        block[8] = channel_type;
-        block[9] = channel_index;
-        // SAFETY: Mixer property 400 is a synchronous 14-byte GET. The
-        // caller-owned packed block has the recovered signature, property,
-        // channel type, and channel index fields and is not retained.
-        let status =
-            unsafe { (self.get_dsp_property)(handle, block.as_mut_ptr().cast::<c_void>(), 14) };
-        check_status("read output attenuation", status)?;
-        Ok(i32::from_le_bytes([
-            block[10], block[11], block[12], block[13],
-        ]))
     }
 
     pub(super) fn stream4x5_settings(&self, handle: u32) -> BackendResult<[u8; 40]> {
@@ -289,7 +342,9 @@ fn check_status(operation: &str, status: u32) -> BackendResult<()> {
     }
     let details = format!("{operation} failed with vendor status 0x{status:08X}");
     match status {
-        0xEE00_0006 | 0xEE00_0007 | 0xEE00_0100 => Err(BackendError::Busy { details }),
+        0xEE00_0006 | 0xEE00_0007 | 0xEE00_0100 | 0xEE00_1002 => {
+            Err(BackendError::Busy { details })
+        }
         0xEE00_0023 | 0xEE00_0033 | 0xEE00_0038 | 0xEE00_0048 | 0xEE00_0071 => {
             Err(BackendError::Disconnected)
         }
@@ -297,6 +352,31 @@ fn check_status(operation: &str, status: u32) -> BackendResult<()> {
         0xEE00_0030 => Err(BackendError::Unsupported { feature: details }),
         _ => Err(BackendError::ProtocolMismatch { details }),
     }
+}
+
+#[cfg(test)]
+fn validate_sample_rate(sample_rate: u32) -> BackendResult<()> {
+    if matches!(sample_rate, 44_100 | 48_000 | 96_000) {
+        Ok(())
+    } else {
+        Err(BackendError::InvalidValue {
+            control: lewitt_core::ControlId::SampleRate,
+            reason: format!("sample rate {sample_rate} is not one of 44100, 48000, or 96000 Hz"),
+        })
+    }
+}
+
+#[cfg(test)]
+fn check_sample_rate_status(sample_rate: u32, status: u32) -> BackendResult<()> {
+    if status == 0xEE00_1004 {
+        return Err(BackendError::InvalidValue {
+            control: lewitt_core::ControlId::SampleRate,
+            reason: format!(
+                "vendor API rejected {sample_rate} Hz with TSTATUS_INVALID_SAMPLE_RATE"
+            ),
+        });
+    }
+    check_status("write sample rate", status)
 }
 
 #[cfg(test)]
@@ -309,9 +389,39 @@ mod tests {
             check_status("test", 0xEE00_0100),
             Err(BackendError::Busy { .. })
         ));
+        assert!(matches!(
+            check_status("test", 0xEE00_1002),
+            Err(BackendError::Busy { .. })
+        ));
         assert_eq!(
             check_status("test", 0xEE00_0071),
             Err(BackendError::Disconnected)
         );
+    }
+
+    #[test]
+    fn sample_rate_write_rejects_values_outside_the_recovered_list() {
+        assert!(matches!(
+            validate_sample_rate(192_000),
+            Err(BackendError::InvalidValue { .. })
+        ));
+        for rate in [44_100, 48_000, 96_000] {
+            assert_eq!(validate_sample_rate(rate), Ok(()));
+        }
+    }
+
+    #[test]
+    fn maps_vendor_sample_rate_statuses_to_typed_errors() {
+        assert!(matches!(
+            check_sample_rate_status(44_100, 0xEE00_1004),
+            Err(BackendError::InvalidValue {
+                control: lewitt_core::ControlId::SampleRate,
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_sample_rate_status(48_000, 0xEE00_1002),
+            Err(BackendError::Busy { .. })
+        ));
     }
 }

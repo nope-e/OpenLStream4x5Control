@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "source": "sanitized Windows vendor-API hardware output-mute encoding plus live write/read-back/exact-restore validation",
+  "sanitization": {
+    "contains_serial_number": false,
+    "contains_device_instance_id": false,
+    "contains_firmware_image": false,
+    "contains_audio_data": false
+  },
+  "environment": {
+    "validation_date": "2026-09-22",
+    "vendor_api": "5.2",
+    "vendor_api_file_version": "4.67.0.0",
+    "device_firmware_raw": "0x018A"
+  },
+  "logical_call": {
+    "export": "TUSBAUDIO_AudioControlRequestSet",
+    "entity_id": "0x33",
+    "request": "0x03",
+    "control_selector": "0x00",
+    "channel_or_mixer_control": "0x00",
+    "length": 40,
+    "timeout_ms": 500
+  },
+  "golden_encoding": {
+    "control": "output_3_4_hardware_mute",
+    "value": true,
+    "before_block_hex": "00f400f400ee00ee00ee00ee000000000000002c00fa000000000000010101010000000000000100",
+    "changed_offsets": [14, 15],
+    "expected_probe_block_hex": "00f400f400ee00ee00ee00ee000001010000002c00fa000000000000010101010000000000000100"
+  },
+  "live_validation": {
+    "safety_gate": "LEWITT_CTL_CONFIRM_OUTPUT_STATE_PROBE=1",
+    "procedure": "with Lewitt Control Center closed, choose an output pair above -60 dB with zero state flags and non-zero DSP attenuation; set only its paired hardware-mute flags through the public encoder for five seconds; read back through the public snapshot path; restore the exact original 40-byte block; read back",
+    "selected_bus": "output_1_2",
+    "api_result": "both temporary state flags read back as 1 and the exact original 40-byte block was restored and matched",
+    "physical_output_result": "user confirmed that Output 1/2 physically muted during the five-second observation window",
+    "result": "public encoder, vendor-API byte round trip, public Boolean read-back, physical mute effect, and exact restoration passed",
+    "probe_test": "tests::live_output_state_flags_round_trip_restores_exact_block",
+    "production_path_test": "tests::live_hardware_output_mute_round_trip_restores_exact_block"
+  },
+  "limitations": [
+    "Recovered vendor code also writes these flags when the paired hardware gain equals -60 dB; output-gain writes must therefore keep the flags synchronized at that endpoint.",
+    "The public hardware-mute control is approved only for the three paired physical outputs on Windows firmware 0x018A.",
+    "The official control center's visible DSP mute uses host-filter property 400 instead; this fixture validates an independent device hardware mute.",
+    "The underlying USB setup packet has not been captured with USBPcap."
+  ]
+}

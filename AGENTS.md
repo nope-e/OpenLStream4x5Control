@@ -14,15 +14,35 @@ Implement the Stream 4x5 cross-platform control panel described in `PLAN_1.md`. 
   immediate, every successful write is read back, and meter delivery retains
   only the newest frame.
 - The Windows backend now writes Input 1/2 preamp gain, 48V phantom power,
-  80 Hz high-pass, and phase invert on the hardware-tested firmware `0x018A`
-  profile through a full-block read-modify-write. Other Windows writes and all Linux writes
+  80 Hz high-pass, phase invert, all three paired physical output gains, and
+  paired hardware output mute on the hardware-tested firmware `0x018A` profile
+  through a full-block read-modify-write. Other Windows writes and all Linux writes
   remain deliberate `Unsupported` safety stubs. Do not weaken them until the
   corresponding operation is documented in `docs/protocol/stream4x5.md` and
   covered by a sanitized golden fixture.
 - The Windows x64 host passes the current mock tests, formatting, strict
   Clippy, and documentation build. Ignored hardware tests changed and restored
-  both Input 1/2 gains, 48V, high-pass states, and phase states with matching
-  read-back. Arch Linux remains unverified.
+  both Input 1/2 gains, 48V, high-pass states, phase states, and all three
+  output gains with matching read-back. Exact original per-channel output
+  values were restored. A gated hardware-mute test changed the public Output
+  1/2 control, read back the Boolean state, physically muted the output, and
+  restored the exact original 40-byte block. Arch Linux remains unverified.
+- A test-only property-400 SET binding muted one currently unmuted Windows DSP
+  output pair and restored both exact Q8.24 values. The public backend does not
+  use that path because an already-muted pair does not expose the routing and
+  attenuation baseline required for safe unmute. Gated sample-rate probing
+  confirmed the setter ABI with a no-op 48 kHz write, but the device reported
+  only 48 kHz as supported; 44.1 kHz was rejected as
+  `TSTATUS_INVALID_SAMPLE_RATE`. Public sample-rate writes remain disabled.
+- Static analysis identifies settings bytes `12..17` as paired hardware flags
+  also written at the `-60 dB` gain endpoint, not the visible DSP mute state.
+  With Control Center closed, a gated ignored test changed the Output 1/2 pair
+  for five seconds, read both bytes and the public Boolean state back, produced
+  user-confirmed physical silence, and restored an exact byte-for-byte match.
+- The GUI output-mute pill now has a capability-gated discrete command path.
+  It remains non-interactive for read-only descriptors and becomes a toggle
+  when the verified Windows `0x018A` backend advertises `OutputMute` as
+  writable; the controller still performs mandatory read-back.
 - The tested lifecycle is wired into an Iced 0.14 daemon. Closing the window
   leaves the daemon alive, `--background` starts without a window, and a
   `tray-icon` menu provides Show, Reconnect, Status, and Quit. Linux selects
@@ -38,13 +58,17 @@ Implement the Stream 4x5 cross-platform control panel described in `PLAN_1.md`. 
   intentionally deferred until the remaining device work is complete.
 - The Windows backend validates and loads the registered 64-bit vendor API,
   reads the hardware snapshot, and writes Input 1/2 gain, 48V, 80 Hz high-pass,
-  and phase invert only on firmware `0x018A`. `lewittctl diagnose [--json]` remains
-  read-only and all unverified CLI operations fail closed.
+  phase invert, all three output gains, and hardware output mute only on
+  firmware `0x018A`.
+  `lewittctl diagnose [--json]` remains read-only and all unverified CLI
+  operations fail closed.
 
 ## Immediate Priorities
 
-1. Validate and expose remaining Windows hardware controls one property at a
-   time, with read-back, restoration, and a sanitized fixture for each.
+1. Recover the read-only streaming-mode/format state that explains why this
+   device reports only 48 kHz. Do not change streaming mode or expose public
+   sample-rate writes until a second rate is reported and a gated
+   write/read-back/restore test passes.
 2. Validate the Linux Unix-socket transport and KSNI tray in an Arch
    environment.
 3. Add Linux VID/PID-only discovery and permission diagnostics in an Arch

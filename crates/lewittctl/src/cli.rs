@@ -119,7 +119,7 @@ fn diagnose() -> DiagnosticReport {
             vendor_api_path: Some(path.display().to_string()),
             writes_enabled: false,
             protocol_evidence_available: true,
-            detail: "registered vendor API path is valid; the GUI can enable Input 1/2 gain, 48V, 80 Hz high-pass, and phase-invert writes after a connected device matches the verified firmware profile, while CLI set remains unavailable"
+            detail: "registered vendor API path is valid; the GUI can enable Input 1/2 gain, 48V, 80 Hz high-pass, phase-invert, all three output-gain writes, and hardware output mute after a connected device matches the verified firmware profile, while CLI set remains unavailable"
                 .into(),
         },
         Err(error) => DiagnosticReport {

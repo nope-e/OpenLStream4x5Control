@@ -1,7 +1,6 @@
 use crate::{
-    BackendError, ControlAccess, ControlCommand, ControlId, ControlKind, ControlValue,
-    DeviceBackend, DeviceCapabilities, DeviceEvent, DeviceId, DeviceInfo, DeviceSnapshot,
-    FirmwareStatus, MeterFrame,
+    BackendError, ControlCommand, ControlId, ControlValue, DeviceBackend, DeviceCapabilities,
+    DeviceEvent, DeviceId, DeviceInfo, DeviceSnapshot, MeterFrame,
 };
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError, bounded};
 use std::collections::BTreeMap;
@@ -398,19 +397,6 @@ where
             );
             return;
         };
-        if !capabilities.writes_enabled() {
-            let version = match &capabilities.firmware {
-                FirmwareStatus::Verified { .. } => None,
-                FirmwareStatus::UnknownReadOnly { version }
-                | FirmwareStatus::Unsupported { version } => version.clone(),
-            };
-            self.emit_error(
-                WorkerOperation::SetControl,
-                BackendError::UnsupportedFirmware { version },
-                None,
-            );
-            return;
-        }
         let Some(descriptor) = capabilities.descriptor(&command.control) else {
             self.emit_error(
                 WorkerOperation::SetControl,
@@ -421,7 +407,7 @@ where
             );
             return;
         };
-        if descriptor.access != ControlAccess::Writable {
+        if !descriptor.writable {
             self.emit_error(
                 WorkerOperation::SetControl,
                 BackendError::Unsupported {
@@ -442,11 +428,28 @@ where
             );
             return;
         }
-        if descriptor.kind == ControlKind::Continuous {
+        if descriptor.is_continuous() {
             self.pending_continuous
                 .insert(command.control.clone(), command);
         } else {
+            // Preserve user ordering when a discrete control shares device
+            // state with a coalesced continuous control. For example, an
+            // output-mute click must not be overwritten a few milliseconds
+            // later by an older pending output-gain write.
+            self.flush_pending_continuous();
+            if self.connected {
+                self.write_and_read_back(command);
+            }
+        }
+    }
+
+    fn flush_pending_continuous(&mut self) {
+        let pending = std::mem::take(&mut self.pending_continuous);
+        for command in pending.into_values() {
             self.write_and_read_back(command);
+            if !self.connected {
+                break;
+            }
         }
     }
 
@@ -492,10 +495,7 @@ where
     fn process_due_work(&mut self) {
         let now = Instant::now();
         if now >= self.next_flush {
-            let pending = std::mem::take(&mut self.pending_continuous);
-            for command in pending.into_values() {
-                self.write_and_read_back(command);
-            }
+            self.flush_pending_continuous();
             self.next_flush = now + self.config.continuous_write_interval;
         }
         if now >= self.next_meter {
@@ -673,6 +673,44 @@ mod tests {
     }
 
     #[test]
+    fn discrete_write_flushes_an_older_pending_continuous_write_first() {
+        let (backend, handle) = MockBackend::stream_4x5();
+        let config = ControllerConfig {
+            continuous_write_interval: Duration::from_secs(1),
+            ..quiet_config()
+        };
+        let controller = Controller::spawn(backend, config).expect("worker should spawn");
+        connect(&controller);
+
+        controller
+            .set_control(ControlCommand {
+                control: ControlId::MonitorVolume,
+                value: ControlValue::Decibels(-18.0),
+            })
+            .expect("continuous command should enqueue");
+        controller
+            .set_control(ControlCommand {
+                control: ControlId::DuckerEnabled,
+                value: ControlValue::Boolean(true),
+            })
+            .expect("discrete command should enqueue");
+
+        recv_until(&controller, |event| {
+            matches!(
+                event,
+                ControllerEvent::ControlConfirmed {
+                    control: ControlId::DuckerEnabled,
+                    value: ControlValue::Boolean(true)
+                }
+            )
+        });
+        let writes = handle.take_writes().expect("writes should be observable");
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0].command.control, ControlId::MonitorVolume);
+        assert_eq!(writes[1].command.control, ControlId::DuckerEnabled);
+    }
+
+    #[test]
     fn failed_read_back_refreshes_real_state() {
         let (backend, handle) = MockBackend::stream_4x5();
         let controller = Controller::spawn(backend, quiet_config()).expect("worker should spawn");
@@ -759,13 +797,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_firmware_is_rejected_before_backend_write() {
+    fn read_only_control_is_rejected_before_backend_write() {
         let (backend, handle) = MockBackend::stream_4x5();
         handle
-            .set_firmware_status(FirmwareStatus::UnknownReadOnly {
-                version: Some("future".into()),
-            })
-            .expect("firmware state should be injectable");
+            .set_writable(&ControlId::DuckerEnabled, false)
+            .expect("capability state should be injectable");
         let controller = Controller::spawn(backend, quiet_config()).expect("worker should spawn");
         connect(&controller);
 
@@ -779,7 +815,7 @@ mod tests {
             matches!(
                 event,
                 ControllerEvent::Error {
-                    error: BackendError::UnsupportedFirmware { .. },
+                    error: BackendError::Unsupported { .. },
                     ..
                 }
             )

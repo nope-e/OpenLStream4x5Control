@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "controls": {
+    "input_1_gain": {
+      "id": { "type": "input_volume", "channel": "input1" },
+      "value": { "type": "decibels", "minimum": -7.0, "maximum": 48.0, "step": 1.0 }
+    },
+    "input_2_gain": {
+      "id": { "type": "input_volume", "channel": "input2" },
+      "value": { "type": "decibels", "minimum": -7.0, "maximum": 48.0, "step": 1.0 }
+    },
+    "input_1_mute": {
+      "id": { "type": "input_mute", "channel": "input1" },
+      "value": { "type": "boolean" }
+    },
+    "input_2_mute": {
+      "id": { "type": "input_mute", "channel": "input2" },
+      "value": { "type": "boolean" }
+    },
+    "input_1_phantom": {
+      "id": { "type": "phantom_power", "channel": "input1" },
+      "value": { "type": "boolean" }
+    },
+    "input_2_phantom": {
+      "id": { "type": "phantom_power", "channel": "input2" },
+      "value": { "type": "boolean" }
+    },
+    "input_1_high_pass": {
+      "id": { "type": "high_pass", "channel": "input1" },
+      "value": { "type": "boolean" }
+    },
+    "input_2_high_pass": {
+      "id": { "type": "high_pass", "channel": "input2" },
+      "value": { "type": "boolean" }
+    },
+    "input_1_phase": {
+      "id": { "type": "phase_invert", "channel": "input1" },
+      "value": { "type": "boolean" }
+    },
+    "input_2_phase": {
+      "id": { "type": "phase_invert", "channel": "input2" },
+      "value": { "type": "boolean" }
+    },
+    "output_1_2_gain": {
+      "id": { "type": "output_volume", "bus": "output1_2" },
+      "value": { "type": "decibels", "minimum": -60.0, "maximum": 0.0, "step": 1.0 }
+    },
+    "output_3_4_gain": {
+      "id": { "type": "output_volume", "bus": "output3_4" },
+      "value": { "type": "decibels", "minimum": -60.0, "maximum": 0.0, "step": 1.0 }
+    },
+    "output_5_6_gain": {
+      "id": { "type": "output_volume", "bus": "output5_6" },
+      "value": { "type": "decibels", "minimum": -60.0, "maximum": 0.0, "step": 1.0 }
+    },
+    "sample_rate": {
+      "id": { "type": "sample_rate" },
+      "value": { "type": "integer" }
+    },
+    "clock_source": {
+      "id": { "type": "clock_source" },
+      "value": { "type": "choice", "choices": ["internal", "external"] }
+    },
+    "asio_buffer_size": {
+      "id": { "type": "asio_buffer_size" },
+      "value": { "type": "integer" }
+    }
+  },
+  "profiles": {
+    "windows": {
+      "*": {
+        "controls": [
+          "input_1_gain",
+          "input_2_gain",
+          "input_1_mute",
+          "input_2_mute",
+          "input_1_phantom",
+          "input_2_phantom",
+          "input_1_high_pass",
+          "input_2_high_pass",
+          "input_1_phase",
+          "input_2_phase",
+          "output_1_2_gain",
+          "output_3_4_gain",
+          "output_5_6_gain",
+          "sample_rate",
+          "clock_source",
+          "asio_buffer_size"
+        ],
+        "writable": []
+      },
+      "0x018A": {
+        "controls": [
+          "input_1_gain",
+          "input_2_gain",
+          "input_1_mute",
+          "input_2_mute",
+          "input_1_phantom",
+          "input_2_phantom",
+          "input_1_high_pass",
+          "input_2_high_pass",
+          "input_1_phase",
+          "input_2_phase",
+          "output_1_2_gain",
+          "output_3_4_gain",
+          "output_5_6_gain",
+          "sample_rate",
+          "clock_source",
+          "asio_buffer_size"
+        ],
+        "writable": [
+          "input_1_gain",
+          "input_2_gain",
+          "input_1_phantom",
+          "input_2_phantom",
+          "input_1_high_pass",
+          "input_2_high_pass",
+          "input_1_phase",
+          "input_2_phase",
+          "output_1_2_gain",
+          "output_3_4_gain",
+          "output_5_6_gain"
+        ]
+      }
+    },
+    "linux": {
+      "*": {
+        "controls": [],
+        "writable": []
+      }
+    }
+  }
+}

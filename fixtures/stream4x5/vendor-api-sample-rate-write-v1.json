@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "source": "sanitized Windows vendor-API sample-rate probe with live rejection and no-op write/read-back evidence",
+  "sanitization": {
+    "contains_serial_number": false,
+    "contains_device_instance_id": false,
+    "contains_firmware_image": false,
+    "contains_audio_data": false
+  },
+  "environment": {
+    "validation_date": "2026-09-22",
+    "vendor_api": "5.2",
+    "vendor_api_file_version": "4.67.0.0",
+    "device_firmware_raw": "0x018A"
+  },
+  "logical_call": {
+    "export": "TUSBAUDIO_SetSampleRate",
+    "prototype": "uint32_t SetSampleRate(uint32_t handle, uint32_t sample_rate)",
+    "control_center_static_values_hz": [44100, 48000, 96000],
+    "driver_ioctl": "0x80882108"
+  },
+  "read_only_observation": {
+    "current_hz": 48000,
+    "get_supported_sample_rates_hz": [48000]
+  },
+  "live_validation": {
+    "safety_gate": "LEWITT_CTL_CONFIRM_SAMPLE_RATE_SAFE=1",
+    "procedure": "stop all ASIO/WASAPI clients; read current and supported rates; only select a different device-reported value; read back; restore original; read back",
+    "attempts": [
+      {
+        "requested_hz": 44100,
+        "result": "0xEE001002 TSTATUS_ASIO_IN_USE while an ASIO client was active",
+        "observed_after_hz": 48000
+      },
+      {
+        "requested_hz": 44100,
+        "result": "0xEE001004 TSTATUS_INVALID_SAMPLE_RATE after audio clients were stopped",
+        "observed_after_hz": 48000
+      },
+      {
+        "requested_hz": 48000,
+        "result": "success; no-op write read back as 48000 Hz",
+        "observed_after_hz": 48000
+      }
+    ],
+    "result": "setter ABI and current-value no-op write confirmed; real rate change blocked because the device reported no alternative supported rate",
+    "tests": [
+      "tests::live_sample_rate_round_trip_restores_original_value",
+      "tests::live_sample_rate_current_value_noop_write",
+      "tests::live_read_only_supported_sample_rates"
+    ]
+  },
+  "limitations": [
+    "No actual sample-rate change was accepted; this fixture does not approve exposing sample-rate writes.",
+    "Changing sample rate may interrupt active audio clients, so the hardware test is explicitly gated.",
+    "The reason only 48000 Hz is reported in the current streaming mode is not yet recovered.",
+    "This validates the Windows driver API only and does not approve a Linux UAC2 SET_CUR request."
+  ]
+}
