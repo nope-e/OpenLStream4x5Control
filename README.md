@@ -6,11 +6,14 @@ An experimental, cross-platform control panel for the Lewitt Stream 4x5.
 > endorsed by Lewitt GmbH. Product names are used only to describe
 > compatibility.
 
-The project is at an early implementation stage. The Windows app can load the
+## The project is at an early implementation stage.The implementation on Linux has not yet started. 
+
+The Windows app can load the
 registered vendor API, display a hardware snapshot, and write Input 1/2 preamp
 gain, 48V phantom power, 80 Hz high-pass, phase-invert state, and all three
-physical output gains plus hardware output mute on the validated `0x018A`
-firmware profile. Every other device write stays disabled until that operation
+physical output gains on the validated `0x018A` firmware profile. Capability
+metadata is selected from `profiles/stream4x5.json` by OS and firmware. Every
+other device write stays disabled until that operation
 has a documented, sanitized hardware fixture and an opt-in hardware test.
 
 ## Scope
